@@ -154,8 +154,9 @@ export const Config = ConfigSchema
  *
  * @param ctx - the plugin's cordis context.
  * @param config - parsed plugin config, whose volatile fields arrive as
- *   references; {@link resolveConfig} unwraps and defaults them, so an empty
- *   object is a valid deployment.
+ *   references. {@link liveConfig} wraps them as thunks the adapter reads where
+ *   it uses them, so an edit applies without this function running again; an
+ *   empty object is a valid deployment.
  */
 export function apply(ctx: Context, config: ParsedConfig): void {
   // Every field is read through this view rather than snapshotted, because a

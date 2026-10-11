@@ -1,28 +1,23 @@
 /**
  * dsh-llm-qoder-cn — browser half.
  *
- * Contributes one top-level settings section (`settings.section`, id
- * `qoder-cn`), so the plugin's configuration gets its own entry in the Settings
- * nav beside General / Models / Plugins.
+ * Contributes one top-level settings section (id `qoder-cn`) whose entire
+ * content is the model list: every model the account exposes, each with an
+ * on/off switch and a context-window choice, plus a collapsed "advanced" area
+ * holding the handful of scalars worth reaching without editing YAML.
  *
- * Why this file exists: DSH can auto-generate a page from a plugin's exported
- * `Config` schema, but that page renders inside the *Plugins* settings section.
- * A client bundle that does not ship that section has nowhere to put it — the
- * schema registers and the settings service can read it, yet no nav entry and no
- * page ever appear. Registering our own `settings.section` makes the page
- * reachable regardless of which sections the deployment ships.
+ * The model list cannot come from the config form: it is fetched live from the
+ * Qoder CLI. So the page reads `GET <prefix>/models`, which joins that live
+ * catalog with the user's stored choices, and posts each change back to the same
+ * route. The host owns both the catalog and the write, so the page never
+ * derives state the adapter does not share.
  *
- * Reads and writes go through `ctx.configForms`, the shared settings mirror the
- * stock Models page also uses: `get(ns)` yields a form whose `subscribe` pushes
- * snapshot replacements and whose `set`/`unset` queue revision-fenced writes.
- * Each control is generated from the schema the Host reports, so the form cannot
- * drift from the `Config` declaration in `src/config.ts`.
+ * Rendering from the schema-driven form alone would be wrong here: the useful
+ * controls depend on rows that only exist at runtime.
  *
- * The section is mounted through `configForms.whileServed`, so a deployment that
- * never composed this plugin's host half shows no trace of the page.
- *
- * Hand-written ModuleLoader bundle: no build step, and no dependency beyond the
- * `react` the shell already provides. Colour comes from theme variables.
+ * Hand-written ModuleLoader bundle: no build step, no dependency beyond the
+ * `react` the shell already provides. Colour comes from theme variables so the
+ * page survives a scheme switch.
  */
 
 window.__ModuleLoader__.load({
@@ -31,7 +26,7 @@ window.__ModuleLoader__.load({
     const module = { exports: {} }
     const exports = module.exports
     const React = require('react')
-    const { createElement: h, useState, useEffect, useCallback, useSyncExternalStore } = React
+    const { createElement: h, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore } = React
 
     /** The plugin's config namespace — must equal the profile row id. */
     const NS = 'llm-qoder-cn'
@@ -41,178 +36,192 @@ window.__ModuleLoader__.load({
     const zh = {
       nav: 'Qoder CN',
       title: 'Qoder CN',
-      intro: '基于官方 Qoder CN Agent SDK 的模型接入。复用本机 qoderclicn 登录态，无需填写任何密钥。',
-      loading: '读取配置中…',
-      unavailable: '宿主未提供该配置命名空间。',
-      readonly: '当前 profile 不可写，只能查看。',
-      saving: '保存中…',
+      intro: '勾选要启用的模型，并为需要的模型指定上下文窗口。改动即时生效，无需重启。',
+      loading: '正在读取模型列表…',
+      loadFailed: '读取模型列表失败',
+      retry: '重试',
+      refresh: '刷新列表',
+      refreshing: '刷新中…',
+      saveFailed: '保存失败',
       saved: '已保存',
-      failed: '保存失败',
+      saving: '保存中…',
+      enabledCount: '已启用',
+      noModels: '账号未返回任何模型。请确认本机 qoderclicn 已登录。',
+      search: '搜索模型…',
+      onlyEnabled: '只看已启用',
+      selectAll: '全部启用',
+      selectNone: '全部关闭',
+      colEnabled: '启用',
+      windowDefault: '默认',
+      windowDefaultHint: '跟随上游声明的窗口',
+      vision: '读图',
+      custom: '自定义',
+      advanced: '高级设置',
+      advancedHint: '以下为细节参数，通常无需改动。',
+      show: '展开',
+      hide: '收起',
       reset: '恢复默认',
       on: '开',
       off: '关',
-      groupIdentity: '身份',
-      groupSession: '会话容量',
-      groupContext: '上下文窗口',
-      groupTimeout: '超时',
-      groupModels: '模型',
-      groupBehaviour: '行为',
-      ctxNote: '窗口决定 DSH 的自动压缩阈值（阈值 ≈ 比例 × 窗口）。选最大窗口会让压缩更晚触发。',
-      jsonHint: '按 JSON 编辑；输入过程中的语法错误会被忽略。',
+      windowWarn: '窗口越大，DSH 的自动压缩触发得越晚。若对话经常超限，请选较小的窗口。',
+      advancedFields: {
+        byokRoute: '自定义模型展示方式',
+        displayName: '分组名称',
+        byokDisplayName: '自定义分组名称',
+        maxSessions: '并发会话数',
+        modelCacheTtlSeconds: '模型列表缓存（秒）',
+        defaultReasoningEffort: '默认思考档位',
+        identityOverride: '隐藏 Qoder 身份',
+        defaultMaxTokens: '默认输出上限',
+        toolResultTimeoutSeconds: '工具结果等待（秒）',
+        catalogFetchTimeoutSeconds: '模型列表超时（秒）',
+        abortGraceSeconds: '中断宽限（秒）',
+        coldMaxTurns: '旁路请求轮次',
+        modelAliases: '模型别名',
+      },
     }
     const en = {
       nav: 'Qoder CN',
       title: 'Qoder CN',
-      intro: 'Qoder CN models through the official Agent SDK. Reuses the local qoderclicn login; no credential entry needed.',
-      loading: 'Loading configuration…',
-      unavailable: 'The host does not expose this configuration namespace.',
-      readonly: 'This profile is read-only.',
-      saving: 'Saving…',
+      intro: 'Tick the models you want available and set a context window where needed. Changes apply immediately.',
+      loading: 'Loading models…',
+      loadFailed: 'Could not load the model list',
+      retry: 'Retry',
+      refresh: 'Refresh',
+      refreshing: 'Refreshing…',
+      saveFailed: 'Save failed',
       saved: 'Saved',
-      failed: 'Save failed',
-      reset: 'Reset to default',
+      saving: 'Saving…',
+      enabledCount: 'enabled',
+      noModels: 'The account returned no models. Check that qoderclicn is signed in.',
+      search: 'Search models…',
+      onlyEnabled: 'Enabled only',
+      selectAll: 'Enable all',
+      selectNone: 'Disable all',
+      colEnabled: 'On',
+      windowDefault: 'Default',
+      windowDefaultHint: "Follow upstream's declared window",
+      vision: 'Vision',
+      custom: 'Custom',
+      advanced: 'Advanced',
+      advancedHint: 'Detail parameters; rarely changed.',
+      show: 'Show',
+      hide: 'Hide',
+      reset: 'Reset',
       on: 'on',
       off: 'off',
-      groupIdentity: 'Identity',
-      groupSession: 'Session capacity',
-      groupContext: 'Context window',
-      groupTimeout: 'Timeouts',
-      groupModels: 'Models',
-      groupBehaviour: 'Behaviour',
-      ctxNote: 'The window sets DSH\u2019s auto-compaction threshold (threshold \u2248 ratio \u00d7 window). The largest window delays compaction.',
-      jsonHint: 'Edited as JSON; syntax errors while typing are ignored.',
+      windowWarn: 'A larger window delays DSH\u2019s auto-compaction. Pick a smaller one if conversations overflow.',
+      advancedFields: {
+        byokRoute: 'Custom model grouping',
+        displayName: 'Group name',
+        byokDisplayName: 'Custom group name',
+        maxSessions: 'Concurrent sessions',
+        modelCacheTtlSeconds: 'Catalog cache (s)',
+        defaultReasoningEffort: 'Default reasoning effort',
+        identityOverride: 'Hide Qoder identity',
+        defaultMaxTokens: 'Default output cap',
+        toolResultTimeoutSeconds: 'Tool result wait (s)',
+        catalogFetchTimeoutSeconds: 'Catalog timeout (s)',
+        abortGraceSeconds: 'Abort grace (s)',
+        coldMaxTurns: 'Side-channel turns',
+        modelAliases: 'Model aliases',
+      },
     }
 
-    /** Field → group, so the form reads in sections rather than one long list. */
-    const GROUPS = [
-      ['groupIdentity', ['displayName', 'byokDisplayName', 'byokRoute']],
-      ['groupSession', ['maxSessions', 'modelCacheTtlSeconds']],
-      ['groupContext', ['contextWindowMode', 'contextWindowOverride', 'compactionThresholdHint', 'defaultMaxTokens']],
-      ['groupTimeout', ['toolResultTimeoutSeconds', 'catalogFetchTimeoutSeconds', 'abortGraceSeconds', 'coldMaxTurns']],
-      ['groupModels', ['enabledModels', 'disabledModels', 'modelAliases']],
-      ['groupBehaviour', ['identityOverride', 'defaultReasoningEffort']],
+    /** Scalars shown under Advanced, in order, with how to render each. */
+    const ADVANCED = [
+      ['byokRoute', 'union'],
+      ['displayName', 'text'],
+      ['byokDisplayName', 'text'],
+      ['maxSessions', 'number'],
+      ['modelCacheTtlSeconds', 'number'],
+      ['defaultReasoningEffort', 'text'],
+      ['identityOverride', 'boolean'],
+      ['defaultMaxTokens', 'number'],
+      ['toolResultTimeoutSeconds', 'number'],
+      ['catalogFetchTimeoutSeconds', 'number'],
+      ['abortGraceSeconds', 'number'],
+      ['coldMaxTurns', 'number'],
+      ['modelAliases', 'json'],
     ]
 
     const css = {
-      page: { maxWidth: '760px', display: 'flex', flexDirection: 'column', gap: '14px', color: 'var(--dsw-alias-label-primary)' },
+      page: { maxWidth: '860px', display: 'flex', flexDirection: 'column', gap: '14px', color: 'var(--dsw-alias-label-primary)' },
       h2: { margin: '0', fontSize: '1.25em' },
       intro: { margin: '0', opacity: 0.72, lineHeight: 1.55, fontSize: '0.92em' },
+      bar: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      btn: { padding: '6px 12px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', background: 'transparent', color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: '0.88em' },
+      input: { padding: '6px 10px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', background: 'var(--dsw-alias-bg-base, transparent)', color: 'inherit', font: 'inherit', fontSize: '0.88em' },
+      search: { flex: '1 1 180px', minWidth: '140px' },
+      count: { fontSize: '0.85em', opacity: 0.7, marginLeft: 'auto' },
+      list: { display: 'flex', flexDirection: 'column', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))', borderRadius: '10px', overflow: 'hidden' },
+      row: { display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', borderTop: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.15))' },
+      rowFirst: { borderTop: 'none' },
+      rowOff: { opacity: 0.5 },
+      name: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' },
+      nameText: { fontSize: '0.92em', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      id: { fontSize: '0.76em', opacity: 0.55, fontFamily: 'ui-monospace, monospace' },
+      tag: { fontSize: '0.72em', padding: '1px 6px', borderRadius: '5px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', opacity: 0.75 },
+      select: { padding: '5px 8px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', background: 'var(--dsw-alias-bg-base, transparent)', color: 'inherit', font: 'inherit', fontSize: '0.85em', minWidth: '104px' },
+      switch: { width: '17px', height: '17px', cursor: 'pointer', accentColor: 'var(--dsw-alias-brand-primary, #4c6ef5)' },
+      note: { fontSize: '0.82em', opacity: 0.62, lineHeight: 1.5 },
+      err: { fontSize: '0.86em', color: 'var(--dsw-alias-label-danger, #e03131)' },
       group: { display: 'flex', flexDirection: 'column', gap: '10px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))', borderRadius: '10px', padding: '14px 16px' },
-      groupTitle: { margin: '0', fontSize: '0.95em', fontWeight: 600, opacity: 0.85 },
-      row: { display: 'flex', flexDirection: 'column', gap: '4px' },
-      label: { fontSize: '0.9em', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' },
-      resetBtn: { fontSize: '0.75em', opacity: 0.55, fontWeight: 400, background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0, font: 'inherit', color: 'inherit' },
-      help: { fontSize: '0.82em', opacity: 0.62, lineHeight: 1.45 },
-      input: { padding: '7px 9px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', background: 'var(--dsw-alias-bg-base, transparent)', color: 'inherit', font: 'inherit', width: '100%', boxSizing: 'border-box' },
-      mono: { fontFamily: 'ui-monospace, monospace', fontSize: '0.85em', minHeight: '64px' },
-      check: { display: 'flex', alignItems: 'center', gap: '8px' },
-      bar: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
-      note: { fontSize: '0.82em', opacity: 0.62 },
-      status: { fontSize: '0.85em', opacity: 0.75 },
-      err: { fontSize: '0.85em', color: 'var(--dsw-alias-label-danger, #e03131)' },
-    }
-
-    /** Read one schema node's enum members, across the shapes schemastery emits. */
-    function enumMembers(node) {
-      if (node === undefined || node === null) return []
-      if (Array.isArray(node.list)) {
-        return node.list
-          .map(entry => (entry !== null && typeof entry === 'object' ? entry.value : entry))
-          .filter(value => typeof value === 'string')
-      }
-      return []
-    }
-
-    /** Resolve a field's schema node out of the serialized envelope. */
-    function nodeOf(schema, key) {
-      const refs = schema?.refs
-      const root = refs?.[schema?.uid]
-      const ref = root?.dict?.[key]
-      return ref === undefined ? undefined : refs?.[ref]
+      advLabel: { fontSize: '0.88em' },
+      h3: { margin: 0, fontSize: '0.95em' },
     }
 
     /**
-     * One generated control.
-     *
-     * `overridden` marks a field the user layer holds explicitly, so the reset
-     * affordance is visibly meaningful rather than a no-op.
+     * Same-origin API base, resolved against the document so a deployment under
+     * a sub-path still reaches its own host.
      */
-    function Field({ name, node, value, overridden, writable, t, onChange, onReset }) {
-      const meta = node?.meta ?? {}
-      const type = node?.type
-      const help = typeof meta.description === 'string' ? meta.description : undefined
+    const API = (() => {
+      try { return new URL('api/llm-qoder-cn', document.baseURI).pathname } catch { return '/api/llm-qoder-cn' }
+    })()
 
-      let control
-      if (type === 'boolean') {
-        control = h('label', { style: css.check },
-          h('input', {
-            type: 'checkbox',
-            checked: value === true,
-            disabled: !writable,
-            onChange: event => onChange(event.target.checked),
-          }),
-          h('span', null, value === true ? t('on') : t('off')),
-        )
-      } else if (type === 'union') {
-        const members = enumMembers(node)
-        control = h('select', {
-          style: css.input,
-          value: value === undefined ? '' : String(value),
-          disabled: !writable,
-          onChange: event => onChange(event.target.value),
-        }, members.map(member => h('option', { key: member, value: member }, member)))
-      } else if (type === 'array' || type === 'dict') {
-        control = h('textarea', {
-          style: { ...css.input, ...css.mono },
-          value: value === undefined ? (type === 'array' ? '[]' : '{}') : JSON.stringify(value, null, 1),
-          disabled: !writable,
-          onChange: event => {
-            try {
-              onChange(JSON.parse(event.target.value))
-            } catch {
-              /* keep the last valid value while the user is mid-edit */
-            }
-          },
-        })
-      } else if (type === 'number') {
-        control = h('input', {
-          type: 'number',
-          style: css.input,
-          value: value === undefined ? '' : String(value),
-          min: meta.min,
-          max: meta.max,
-          step: meta.step,
-          disabled: !writable,
-          onChange: event => {
-            const raw = event.target.value
-            onChange(raw === '' ? undefined : Number(raw))
-          },
-        })
-      } else {
-        control = h('input', {
-          type: 'text',
-          style: css.input,
-          value: value === undefined ? '' : String(value),
-          disabled: !writable,
-          onChange: event => onChange(event.target.value),
-        })
+    /** Call the plugin's model API. */
+    async function api(path, options) {
+      const { timeout = 30_000, ...rest } = options ?? {}
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), timeout)
+      try {
+        const response = await fetch(`${API}${path}`, { ...rest, signal: ctrl.signal })
+        const text = await response.text()
+        let payload
+        try { payload = text === '' ? {} : JSON.parse(text) } catch { payload = { error: text.slice(0, 200) } }
+        if (!response.ok) throw new Error(payload?.error ?? `HTTP ${response.status}`)
+        return payload
+      } finally {
+        clearTimeout(timer)
       }
-
-      return h('div', { style: css.row },
-        h('label', { style: css.label },
-          name,
-          overridden && writable
-            ? h('button', { style: css.resetBtn, onClick: onReset }, t('reset'))
-            : null,
-        ),
-        control,
-        help !== undefined ? h('div', { style: css.help }, help) : null,
-        type === 'array' || type === 'dict' ? h('div', { style: css.note }, t('jsonHint')) : null,
-      )
     }
 
-    /** The settings page: schema-driven form over the plugin's config namespace. */
+    /** Compact label for a token count. */
+    function windowLabel(n) {
+      if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
+      if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1))}M`
+      if (n >= 1000) return `${Math.round(n / 1000)}K`
+      return String(n)
+    }
+
+    /**
+     * The model table plus the advanced block.
+     *
+     * Each change posts and then adopts the host's returned list, so the page
+     * shows what the adapter will actually do rather than what the click hoped.
+     * A per-request ticket keeps a slow earlier answer from overwriting a newer
+     * one when the user clicks quickly.
+     */
     function SettingsPage({ ctx, t }) {
+      const [models, setModels] = useState(undefined)
+      const [error, setError] = useState(undefined)
+      const [status, setStatus] = useState(undefined)
+      const [busy, setBusy] = useState(false)
+      const [query, setQuery] = useState('')
+      const [onlyEnabled, setOnlyEnabled] = useState(false)
+      const [showAdvanced, setShowAdvanced] = useState(false)
+      const ticket = useRef(0)
+
       const form = ctx.configForms.get(NS)
       const subscribe = useCallback(listener => form.subscribe(listener), [form])
       const read = useCallback(() => form.getSnapshot(), [form])
@@ -222,76 +231,291 @@ window.__ModuleLoader__.load({
       const describeSubscribe = useCallback(listener => describeFace.subscribe(listener), [describeFace])
       const describeRead = useCallback(() => describeFace.getSnapshot(), [describeFace])
       const describeSnapshot = useSyncExternalStore(describeSubscribe, describeRead)
-
-      const [status, setStatus] = useState(undefined)
-      const [error, setError] = useState(undefined)
-
-      // First use must kick the shared mirror; it starts idle.
       useEffect(() => { describeFace.ensure().catch(() => undefined) }, [describeFace])
 
-      const namespace = describeSnapshot.view?.namespaces?.find(entry => entry.ns === NS)
-
-      if (snapshot.status === 'loading' && namespace === undefined) {
-        return h('div', { style: css.page }, h('h2', { style: css.h2 }, t('title')), h('div', { style: css.status }, t('loading')))
-      }
-      if (namespace === undefined) {
-        return h('div', { style: css.page }, h('h2', { style: css.h2 }, t('title')), h('div', { style: css.note }, t('unavailable')))
-      }
-
-      const schema = namespace.schema ?? {}
-      const value = snapshot.value ?? {}
-      const user = snapshot.user
-      const writable = snapshot.writable !== false
-
-      const write = (key, next) => {
+      const load = useCallback(async () => {
         setError(undefined)
-        setStatus(t('saving'))
-        const op = next === undefined || next === ''
-          ? form.unset(key)
-          : form.set(key, next)
-        op.then(ok => {
-          setStatus(ok ? t('saved') : t('failed'))
-          if (!ok) setError(t('failed'))
-        }).catch(err => {
-          setStatus(undefined)
+        const mine = ++ticket.current
+        try {
+          const payload = await api('/models')
+          if (mine !== ticket.current) return
+          setModels(Array.isArray(payload?.models) ? payload.models : [])
+        } catch (err) {
+          if (mine !== ticket.current) return
           setError(String(err?.message ?? err))
+          setModels(previous => previous ?? [])
+        }
+      }, [])
+
+      useEffect(() => { void load() }, [load])
+
+      /**
+       * Apply one change through the shared config form, then re-read the list.
+       *
+       * The write goes through `configForms`, not the API route: that form owns
+       * the namespace's revision fence, so every change is ordered and a stale
+       * editor is refused rather than silently overwriting. The read afterwards
+       * is what makes the row show the adapter's resolved state.
+       */
+      const write = useCallback(async (key, next) => {
+        const mine = ++ticket.current
+        setBusy(true)
+        setStatus(t('saving'))
+        setError(undefined)
+        try {
+          const op = next === undefined ? form.unset(key) : form.set(key, next)
+          const accepted = await op
+          if (mine !== ticket.current) return
+          if (accepted === false) throw new Error(t('saveFailed'))
+          await load()
+          if (mine !== ticket.current) return
+          setStatus(t('saved'))
+        } catch (err) {
+          if (mine !== ticket.current) return
+          setError(`${t('saveFailed')}：${String(err?.message ?? err)}`)
+          setStatus(undefined)
+        } finally {
+          if (mine === ticket.current) setBusy(false)
+        }
+      }, [form, load, t])
+
+      /**
+       * Write the whole disabled-model list, derived from the rows the user
+       * just changed, so rapid toggles cannot lose each other's edits.
+       */
+      const writeDisabled = useCallback((rows, id, enabled) => {
+        const next = new Set(rows.filter(m => !m.enabled).map(m => m.id))
+        if (enabled) next.delete(id)
+        else next.add(id)
+        return write('disabledModels', [...next])
+      }, [write])
+
+      /** Write the whole per-model window map. */
+      const writeWindow = useCallback((rows, id, window) => {
+        const next = {}
+        for (const m of rows) if (m.override !== undefined) next[m.id] = m.override
+        if (window === undefined) delete next[id]
+        else next[id] = window
+        return write('modelContextWindows', next)
+      }, [write])
+
+      const all = models ?? []
+      const enabledTotal = all.filter(m => m.enabled).length
+
+      const shown = useMemo(() => {
+        const q = query.trim().toLowerCase()
+        return all.filter(m => {
+          if (onlyEnabled && !m.enabled) return false
+          if (q === '') return true
+          return String(m.name).toLowerCase().includes(q) || String(m.id).toLowerCase().includes(q)
         })
+      }, [all, query, onlyEnabled])
+
+      if (models === undefined) {
+        return h('div', { style: css.page },
+          h('h2', { style: css.h2 }, t('title')),
+          error === undefined
+            ? h('div', { style: css.note }, t('loading'))
+            : h('div', null,
+                h('div', { style: css.err }, `${t('loadFailed')}：${error}`),
+                h('button', { style: { ...css.btn, marginTop: '8px' }, onClick: () => void load() }, t('retry')),
+              ),
+        )
       }
 
-      const groups = GROUPS.map(([titleKey, keys]) => {
-        const present = keys.filter(key => nodeOf(schema, key) !== undefined)
-        if (present.length === 0) return null
-        return h('div', { key: titleKey, style: css.group },
-          h('h3', { style: css.groupTitle }, t(titleKey)),
-          present.map(key => h(Field, {
-            key,
-            name: key,
-            node: nodeOf(schema, key),
-            value: value[key],
-            overridden: user !== null && typeof user === 'object' && Object.hasOwn(user, key),
-            writable,
-            t,
-            onChange: next => write(key, next),
-            onReset: () => write(key, undefined),
-          })),
-          titleKey === 'groupContext' ? h('div', { style: css.note }, t('ctxNote')) : null,
+      const rows = shown.map((m, index) => {
+        const choices = Array.isArray(m.contextWindows) ? m.contextWindows : []
+        return h('div', {
+          key: m.id,
+          style: { ...css.row, ...(index === 0 ? css.rowFirst : {}), ...(m.enabled ? {} : css.rowOff) },
+        },
+          h('input', {
+            type: 'checkbox',
+            style: css.switch,
+            checked: m.enabled === true,
+            disabled: busy,
+            title: t('colEnabled'),
+            onChange: event => { void writeDisabled(all, m.id, event.target.checked) },
+          }),
+          h('div', { style: css.name },
+            h('div', { style: css.nameText },
+              m.name,
+              m.vision === true ? h('span', { key: 'v', style: { ...css.tag, marginLeft: '6px' } }, t('vision')) : null,
+              (m.source === 'user' || m.source === 'custom')
+                ? h('span', { key: 'c', style: { ...css.tag, marginLeft: '6px' } }, t('custom'))
+                : null,
+            ),
+            h('div', { style: css.id }, m.id),
+          ),
+          h('select', {
+            style: css.select,
+            value: m.override === undefined ? '' : String(m.override),
+            disabled: busy,
+            title: t('windowDefaultHint'),
+            onChange: event => {
+              const value = event.target.value
+              void writeWindow(all, m.id, value === '' ? undefined : Number(value))
+            },
+          },
+            h('option', { key: 'default', value: '' }, `${t('windowDefault')} · ${windowLabel(m.defaultContextWindow)}`),
+            choices.map(n => h('option', { key: String(n), value: String(n) }, windowLabel(n))),
+          ),
         )
-      }).filter(Boolean)
+      })
+
+      const advanced = buildAdvanced({
+        t, form, snapshot,
+        namespace: describeSnapshot.view?.namespaces?.find(n => n.ns === NS),
+        show: showAdvanced,
+        onToggle: () => setShowAdvanced(value => !value),
+      })
 
       return h('div', { style: css.page },
         h('h2', { style: css.h2 }, t('title')),
         h('p', { style: css.intro }, t('intro')),
-        !writable ? h('div', { style: css.note }, t('readonly')) : null,
-        groups,
-        status !== undefined ? h('div', { style: css.status }, status) : null,
+
+        h('div', { style: css.bar },
+          h('input', {
+            style: { ...css.input, ...css.search },
+            placeholder: t('search'),
+            value: query,
+            onChange: event => setQuery(event.target.value),
+          }),
+          h('label', { style: { ...css.note, display: 'flex', alignItems: 'center', gap: '6px' } },
+            h('input', { type: 'checkbox', checked: onlyEnabled, onChange: event => setOnlyEnabled(event.target.checked) }),
+            t('onlyEnabled'),
+          ),
+          h('button', { style: css.btn, disabled: busy, onClick: () => void load() }, t('refresh')),
+          h('button', {
+            style: css.btn,
+            disabled: busy || all.every(m => m.enabled),
+            onClick: () => void write('disabledModels', []),
+          }, t('selectAll')),
+          h('button', {
+            style: css.btn,
+            disabled: busy || enabledTotal === 0,
+            onClick: () => void write('disabledModels', all.map(m => m.id)),
+          }, t('selectNone')),
+          h('span', { style: css.count }, `${t('enabledCount')} ${enabledTotal} / ${all.length}`),
+        ),
+
+        all.length === 0
+          ? h('div', { style: css.note }, t('noModels'))
+          : h('div', { style: css.list }, rows.length > 0 ? rows : h('div', { style: { ...css.note, padding: '12px 14px' } }, '—')),
+
+        all.length > 0 ? h('div', { style: css.note }, t('windowWarn')) : null,
         error !== undefined ? h('div', { style: css.err }, error) : null,
+        status !== undefined && error === undefined ? h('div', { style: css.note }, status) : null,
+
+        advanced,
       )
     }
 
     /**
-     * Mount the settings section while the Host serves this plugin's namespace.
-     * @param ctx - the browser plugin context.
+     * The collapsed advanced block: the remaining scalars, rendered against the
+     * host's schema so labels, bounds and defaults stay in one place.
      */
+    function buildAdvanced({ t, form, snapshot, namespace, show, onToggle }) {
+      const header = h('div', { style: css.bar },
+        h('button', { style: css.btn, onClick: onToggle }, show ? t('hide') : t('show')),
+        h('span', { style: css.note }, t('advancedHint')),
+      )
+      if (!show) {
+        return h('div', { style: css.group }, h('h3', { style: css.h3 }, t('advanced')), header)
+      }
+
+      const value = snapshot?.value ?? {}
+      const user = snapshot?.user
+      const schema = namespace?.schema
+      const refs = schema?.refs
+      const root = refs?.[schema?.uid]
+      const writable = snapshot?.writable !== false
+
+      const set = (key, next) => {
+        const op = next === undefined || next === ''
+          ? form.unset(key)
+          : form.set(key, next)
+        op.catch(() => undefined)
+      }
+
+      const rows = ADVANCED.map(([key, kind]) => {
+        const node = refs?.[root?.dict?.[key]]
+        if (node === undefined) return null
+        const labels = t('advancedFields') ?? {}
+        const help = typeof node?.meta?.description === 'string' ? node.meta.description : undefined
+        const current = value[key]
+        const overridden = user !== null && typeof user === 'object' && Object.hasOwn(user, key)
+
+        let control
+        if (kind === 'boolean') {
+          control = h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+            h('input', {
+              type: 'checkbox',
+              checked: current === true,
+              disabled: !writable,
+              onChange: event => set(key, event.target.checked),
+            }),
+            h('span', { style: css.note }, current === true ? t('on') : t('off')),
+          )
+        } else if (kind === 'union') {
+          const members = Array.isArray(node.list)
+            ? node.list.map(entry => (entry !== null && typeof entry === 'object' ? entry.value : entry)).filter(v => typeof v === 'string')
+            : []
+          control = h('select', {
+            style: css.select,
+            value: current === undefined ? '' : String(current),
+            disabled: !writable,
+            onChange: event => set(key, event.target.value),
+          }, members.map(m => h('option', { key: m, value: m }, m)))
+        } else if (kind === 'json') {
+          control = h('input', {
+            style: { ...css.input, fontFamily: 'ui-monospace, monospace' },
+            defaultValue: current === undefined ? '{}' : JSON.stringify(current),
+            disabled: !writable,
+            onBlur: event => {
+              try { set(key, JSON.parse(event.target.value)) } catch { /* keep the last valid value */ }
+            },
+          })
+        } else {
+          control = h('input', {
+            style: css.input,
+            type: kind === 'number' ? 'number' : 'text',
+            value: current === undefined ? '' : String(current),
+            min: node?.meta?.min,
+            max: node?.meta?.max,
+            step: node?.meta?.step,
+            disabled: !writable,
+            onChange: event => {
+              const raw = event.target.value
+              if (raw === '') { set(key, undefined); return }
+              set(key, kind === 'number' ? Number(raw) : raw)
+            },
+          })
+        }
+
+        return h('div', { key, style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+            h('span', { style: css.advLabel }, labels[key] ?? key),
+            overridden && writable
+              ? h('button', {
+                  style: { fontSize: '0.75em', opacity: 0.55, background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0, font: 'inherit', color: 'inherit' },
+                  onClick: () => set(key, undefined),
+                }, t('reset'))
+              : null,
+          ),
+          control,
+          help !== undefined ? h('div', { style: css.note }, help) : null,
+        )
+      }).filter(Boolean)
+
+      return h('div', { style: css.group },
+        h('h3', { style: css.h3 }, t('advanced')),
+        header,
+        rows,
+      )
+    }
+
+    /** Register the section; the shell renders it in the Settings nav. */
     function apply(ctx) {
       const t = ctx.locale.bind(NS)
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'llm-qoder-cn: dictionaries')
@@ -307,7 +531,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply
     exports.inject = inject
     exports.name = 'dsh-llm-qoder-cn'
-    exports.__test = { enumMembers, nodeOf, GROUPS, zh, en }
+    exports.__test = { windowLabel, ADVANCED, zh, en }
     return module.exports
   },
 })

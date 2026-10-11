@@ -61,106 +61,54 @@ SDK 会回退到 PATH 上的系统 `qoderclicn`。
 
 装好后进 **设置 → Qoder CN**（与「通用设置 / 模型 / 内置插件」并列的独立一项）。
 
-### 为什么这页需要两件东西才出现
-
-配置页要出现，必须**同时**满足两个条件，缺一个都毫无提示地什么都不显示：
-
-**1. 每个字段必须 `.volatile()`。** DSH 的 settings 服务用
-`volatileForm(schema)`（`dsh-settings/lib/types/schema.js`）构造表单，它**只保留带
-`meta.volatile` 的节点**；一个字段全是非 volatile 的 object 会塌缩成 `undefined`，
-`describe()` 随即 `return []` 丢掉整个命名空间——插件照常加载、模型照常可用，
-但命名空间**从未下发到客户端**。本插件 18 个字段全部标记 `.volatile()`，这同时也是
-语义正确的声明：它们是稳定的标量/列表/映射引用，编辑后即时生效。
-
-**2. 插件必须自带 `client.js` 注册 `settings.section`。** DSH 的自动配置页渲染在
-**「内置插件」分区内部**；自带 `settings.section` 才有独立的顶层导航项，不依赖那个分区。
-
-只满足第 2 条而漏掉第 1 条，正是本插件 v0.1.x 的实际故障：`client.js` 正确注册了
-`settings.section`，但 `whileServed` 门控等的是命名空间下发，而命名空间因 volatile
-缺失永远不来，于是设置项一直不出现。修复见 v0.2.0。
-
-页面仍由宿主上报的 schema 驱动，所以表单不可能与 `src/config.ts` 的声明脱节。
-读写走 `ctx.configForms`（与官方「模型」页同一个共享设置镜像）：
-`get(ns)` 取表单，`subscribe` 推送快照，`set`/`unset` 提交带修订号的写入。
-字段被用户层显式覆盖时会出现「恢复默认」。
-
-### 身份
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `displayName` | `Qoder CN` | 模型选择器里主分组名 |
-| `byokDisplayName` | `Qoder CN 自定义` | 自定义模型分组名 |
-| `byokRoute` | `separate` | 自定义模型独立成组，或 `inline` 并入主组 |
-
-### 会话容量
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `maxSessions` | `8` | 同时保持 warm 的内层 CLI 会话数；超出按 LRU 关闭。多开会话切换慢就调大，内存紧张就调小（每个 warm 会话是一个子进程） |
-| `modelCacheTtlSeconds` | `300` | 模型目录缓存时长。调小能更快看到账号变化（新自定义模型、配额导致的模型停用） |
-
-### 上下文窗口
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `contextWindowMode` | `auto` | 见下 |
-| `contextWindowOverride` | `200000` | 仅 `custom` 模式使用 |
-| `compactionThresholdHint` | `0.8` | 仅启动日志提示，harness 掌握真实阈值 |
-| `defaultMaxTokens` | `32000` | 模型未声明输出上限时的兜底 |
-
-**`contextWindowMode` 的四个取值**，以及为什么默认不是 1M：
-
-上游目录对每个模型同时报三个不同的数，混用是经典错误：
+页面就是一张**模型清单**：账号下所有模型自动列出，每行一个启用开关 + 一个上下文窗口
+下拉，全中文。改动即时生效，不用重启。
 
 ```
-maxInputTokens: 180000                    ← 单次请求上限
-defaultContextWindow: 200000              ← 会话实际使用的窗口
-availableContextWindows: [200000, 400000, 1000000]   ← 可切换的窗口列表
+模型                        启用      上下文窗口
+☑  Qwen3.8-Max             ▢         [默认 · 200K  ▾]
+   qmodel_38max                      （200K / 400K / 1M）
+☑  Qwen3.8-Flash           ▢         [默认 · 200K  ▾]
+☑  Qwen3.7-Max             ▢         [默认 · 200K  ▾]
+☐  MiniMax-M3              ▢         [默认 · 200K  ▾]
 ```
 
-| 模式 | 结果 | 何时用 |
-|---|---|---|
-| `auto` | 上游默认窗口（200K） | **默认**。与 provider 真实接受量对齐 |
-| `default` | 同上，但语义固定 | 想锁死"跟随上游默认"而不受将来 `auto` 语义变化影响 |
-| `max` | 最大可用窗口（1M） | 你确实需要 1M，并接受压缩变晚 |
-| `custom` | `contextWindowOverride` | 指定固定值 |
+- **列表来自账号实时目录**，不是写死的：新增的模型自动出现，且默认启用。
+  这也是「关闭」用拒绝清单而不是允许清单存储的原因——允许清单会把后来新增的模型静默藏掉。
+- **上下文窗口下拉列出上游为该模型声明的所有可选窗口**（如 `200K / 400K / 1M`），
+  默认档跟随上游声明的会话窗口。
+- 顶部有**搜索**、**只看已启用**、**刷新列表**、**全部启用 / 全部关闭**，并显示
+  `已启用 N / 总数`。
+- 窗口下方有一行提示：窗口越大，DSH 的自动压缩触发得越晚。
 
-**为什么 `auto` 不直接用 1M**：harness 用 `contextWindow` 当作自动压缩阈值的分母
-（`阈值 = ratio × contextWindow`）。填 1M 会把阈值推到 800K，压缩永远不会在 provider
-拒绝之前触发，长会话反而**更容易直接失败**。选 `max` 时建议同时把部署里
-`dsh-compaction-basic` 的 `thresholdRatio` 调低（如 0.6）来补偿。
+### 高级设置
 
-### 超时
+列表下方是可折叠的「高级设置」，收纳其余 13 个标量参数（分组名称、并发会话数、
+列表缓存、工具结果等待、模型别名等）。默认收起，不打扰使用者；每个字段仍带中文说明，
+被显式改过的字段旁会出现「恢复默认」。
 
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `toolResultTimeoutSeconds` | `120` | 内层模型等待宿主返回工具结果的时限，超时取消该次工具调用 |
-| `catalogFetchTimeoutSeconds` | `20` | 拉取模型目录的时限，超时回退静态列表 |
-| `abortGraceSeconds` | `5` | 内层进程确认中断的宽限 |
-| `coldMaxTurns` | `4` | 旁路请求（标题、压缩摘要）允许的内层轮次 |
+### 这页为什么需要自带 client.js
 
-### 模型
+两个条件缺一个都会**毫无提示地什么都不显示**：
 
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `enabledModels` | `[]` | 允许清单；为空表示全部展示。**可用别名书写** |
-| `disabledModels` | `[]` | 拒绝清单，在允许清单之后生效 |
-| `modelAliases` | `{}` | 自定义 别名 → Qoder 模型 id 映射，覆盖内置的 `deepseek-v4-*` |
+**1. 每个字段必须 `.volatile()`。** DSH 的 settings 服务用 `volatileForm(schema)`
+（`dsh-settings/lib/types/schema.js`）构造表单，它**只保留带 `meta.volatile` 的节点**；
+字段全是非 volatile 的 object 会塌缩成 `undefined`，`describe()` 随即 `return []`
+丢掉整个命名空间——插件照常加载、模型照常可用，但命名空间**从未下发到客户端**。
 
-别名在允许清单里同样生效：写 `deepseek-v4-pro` 能命中目录里的 `dmodel`。
+**2. 必须自带 `client.js` 注册 `settings.section`。** DSH 的自动配置页渲染在
+**「内置插件」分区内部**；自带 `settings.section` 才有独立的顶层导航项。
 
-### 行为
+v0.1.x 只满足第 2 条：`client.js` 正确注册了，但 `whileServed` 门控等的是命名空间下发，
+而命名空间因 volatile 缺失永远不来。修复见 v0.2.0；本页改为模型清单是 v0.3.0。
 
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `identityOverride` | `false` | 见下 |
-| `defaultReasoningEffort` | `''` | 请求未指定思考档位时的默认值；空表示用上游默认 |
+### 数据与写入
 
-**关于 `identityOverride`**：打开后会给内层系统提示前置一段身份说明，要求模型以宿主
-agent 的身份作答、不要自称 Qoder。**本插件默认关闭**，因为这会指示模型否认自身来源，
-属于应当显式选择的产品决策。上游有一份等价的 `renderIdentityAppend`，但全仓库无调用点、
-构建产物中也不存在（被 tree-shaking 移除）——即上游从未真正生效过；本插件把它接上了。
-
+- **读**：`GET /api/llm-qoder-cn/models`（插件自建的宿主路由）把实时模型目录与你的
+  选择合并成上表。模型目录来自 Qoder CLI，无法放进配置表单，所以单独一条只读路由。
+- **写**：走 `ctx.configForms`——与官方「模型」页同一个共享设置镜像，`set`/`unset`
+  提交带修订号的写入，并发编辑会被拒绝而不是静默覆盖。写完再读一次列表，保证显示的是
+  适配器**实际解析出的状态**，而不是点击时的期望。
 ## 用 cordis.patch.yml 配置
 
 设置页之外，也可以在 profile 的 `cordis.patch.yml` 里直接写：
@@ -170,10 +118,12 @@ agent 的身份作答、不要自称 Qoder。**本插件默认关闭**，因为�
   name: dsh-llm-qoder-cn
   config:
     displayName: Qoder CN (工作号)
-    contextWindowMode: max
     maxSessions: 4
+    # 关闭的模型（不会出现在模型选择器里）
     disabledModels: [mmodel]
-    enabledModels: []
+    # 按模型指定上下文窗口（token 数）
+    modelContextWindows:
+      qmodel_38max: 1000000
 ```
 
 ## 实现要点

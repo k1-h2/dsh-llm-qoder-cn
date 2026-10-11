@@ -17,7 +17,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import {
   DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, QODER_MODELS, resolveQoderModelId,
 } from './catalog.ts'
-import type { ContextWindowMode, ResolvedConfig } from './config.ts'
+import type { ResolvedConfig } from './config.ts'
 import { DEFAULT_MODEL_CACHE_TTL_MS, DEFAULT_FETCH_TIMEOUT_MS, QoderModelCatalog } from './models.ts'
 import { feedImageRefs, feedToText, imageRefs, joinFeeds, renderInitialFeed, renderRefreshed, renderUserTurn } from './render.ts'
 import type { Feed } from './render.ts'
@@ -52,15 +52,14 @@ export interface QoderAdapterOptions {
   catalogFetchTimeoutMs?: number
   /** Whether custom models keep their own route or merge into the main one. */
   byokRoute?: 'separate' | 'inline'
-  /** Which context window to report; see `ContextWindowMode`. */
-  contextWindowMode?: ContextWindowMode
-  /** Fixed window used when the mode is `custom`. */
-  contextWindowOverride?: number
+  /**
+   * Per-model context window in tokens, keyed by Qoder model id. A model with
+   * no entry uses the window upstream declares for it.
+   */
+  modelContextWindows?: Readonly<Record<string, number>>
   /** Output-token cap assumed when a model reports none. */
   defaultMaxTokens?: number
-  /** Allow-list of model ids; empty advertises everything. */
-  enabledModels?: readonly string[]
-  /** Deny-list of model ids, applied after the allow-list. */
+  /** Model ids switched off; hidden from the picker. */
   disabledModels?: readonly string[]
   /** Extra harness-id → Qoder-id aliases, merged over the built-in ones. */
   modelAliases?: Readonly<Record<string, string>>
@@ -82,34 +81,34 @@ export const QODER_BYOK_PROVIDER = 'qoder-cn-byok'
 /**
  * Decide the context window to report for one live model.
  *
- * The three upstream numbers mean different things and only one of them is the
- * window a session actually runs with, so the choice is explicit rather than
- * guessed. See `ContextWindowMode` for what each mode is for.
+ * A per-model override wins when the user chose one; otherwise upstream's own
+ * `defaultContextWindow` is used, which is the window that model's session
+ * actually runs with. `maxInputTokens` is NOT a substitute — it is the ceiling
+ * for a single request and is often lower than the session window (e.g. 180 000
+ * against a 200 000 session), so falling back to it would understate capacity.
  *
- * @param mode - the configured mode.
  * @param live - the live catalog entry, when the CLI answered.
- * @param override - the fixed window for `custom`.
- * @param fallback - window used when nothing else is available.
+ * @param override - the user's chosen window for this model, if any.
+ * @param fallback - window used when the catalog has nothing for this model.
  * @returns the window in tokens.
  */
 export function pickContextWindow(
-  mode: ContextWindowMode,
   live: { maxInputTokens?: number, defaultContextWindow?: number, availableContextWindows?: readonly number[] } | undefined,
-  override: number,
+  override: number | undefined,
   fallback: number,
 ): number {
-  if (mode === 'custom') return override
+  if (override !== undefined && Number.isFinite(override) && override > 0) return override
   if (live === undefined) return fallback
-  const declared = live.defaultContextWindow
-  if (mode === 'max') {
-    const available = live.availableContextWindows
-    const largest = available !== undefined && available.length > 0 ? Math.max(...available) : undefined
-    return largest ?? declared ?? live.maxInputTokens ?? fallback
-  }
-  // `auto` and `default` both follow upstream's own per-session window. `auto`
-  // is kept as a distinct id so the default can diverge later without changing
-  // what an explicitly-pinned `default` means.
-  return declared ?? live.maxInputTokens ?? fallback
+  return live.defaultContextWindow
+    ?? largestWindow(live.availableContextWindows)
+    ?? live.maxInputTokens
+    ?? fallback
+}
+
+/** The largest window in a catalog entry's selectable list, or undefined. */
+function largestWindow(available: readonly number[] | undefined): number | undefined {
+  if (available === undefined || available.length === 0) return undefined
+  return Math.max(...available)
 }
 
 function modelInfo(provider: string, entry: { id: string, name: string, description?: string, isVl?: boolean }): LlmModelInfo {
@@ -180,11 +179,8 @@ export class QoderAdapter extends LlmAdapter {
   private readonly sessions: QoderSessionManager
   private readonly catalog: QoderModelCatalog
   private readonly readImage: ImageRequestReader | undefined
-  private readonly contextWindowMode: ContextWindowMode
-  private readonly contextWindowOverride: number
   private readonly defaultMaxTokens: number
-  private readonly enabledModels: ReadonlySet<string>
-  private readonly enabledModelsResolved: ReadonlySet<string>
+  private readonly modelContextWindows: Readonly<Record<string, number>>
   private readonly disabledModels: ReadonlySet<string>
   private readonly modelAliases: Readonly<Record<string, string>>
   private readonly defaultReasoningEffort: string | undefined
@@ -206,19 +202,10 @@ export class QoderAdapter extends LlmAdapter {
     )
     this.readImage = options.readImage
     this.byokRoute = options.byokRoute ?? 'separate'
-    this.contextWindowMode = options.contextWindowMode ?? 'auto'
-    this.contextWindowOverride = options.contextWindowOverride ?? DEFAULT_CONTEXT_WINDOW
     this.defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS
-    this.enabledModels = new Set(options.enabledModels ?? [])
+    this.modelContextWindows = options.modelContextWindows ?? {}
     this.disabledModels = new Set(options.disabledModels ?? [])
     this.modelAliases = options.modelAliases ?? {}
-    // Pre-resolve the allow-list so an entry written as a harness-side alias
-    // (`deepseek-v4-pro`) matches the Qoder id the catalog actually carries
-    // (`dmodel`). Resolving the catalog id instead would never match, because
-    // the alias table maps harness name → Qoder id, not the reverse.
-    this.enabledModelsResolved = new Set(
-      [...this.enabledModels].map(entry => resolveQoderModelId(entry, this.modelAliases)),
-    )
     this.defaultReasoningEffort = options.defaultReasoningEffort
     this.displayName = options.displayName ?? 'Qoder CN'
     this.byokDisplayName = options.byokDisplayName ?? 'Qoder CN 自定义'
@@ -232,17 +219,65 @@ export class QoderAdapter extends LlmAdapter {
   }
 
   /**
-   * Whether one model survives the configured allow/deny lists.
+   * Whether one catalog entry is enabled for the picker.
    *
-   * A catalog id is matched against the allow-list directly, against its
-   * alias-resolved form, and against the raw entries whose own resolution
-   * produced it — so a user may write either the Qoder value (`dmodel`) or a
-   * harness-side alias (`deepseek-v4-pro`) and get the same model.
+   * Only the user's off-switch is consulted: a model the account adds later
+   * appears enabled by default, which a stored allow-list could not do.
    */
   private isVisible(id: string): boolean {
-    if (this.disabledModels.has(id)) return false
-    if (this.enabledModels.size === 0) return true
-    return this.enabledModels.has(id) || this.enabledModelsResolved.has(id)
+    return !this.disabledModels.has(id)
+  }
+
+  /**
+   * The user's chosen window for one catalog id, honouring aliases.
+   *
+   * A window may be stored under either the Qoder id or a harness-side alias,
+   * so both spellings are checked before giving up.
+   */
+  private windowOverride(id: string): number | undefined {
+    const direct = this.modelContextWindows[id]
+    if (direct !== undefined) return direct
+    for (const [key, value] of Object.entries(this.modelContextWindows)) {
+      if (resolveQoderModelId(key, this.modelAliases) === id) return value
+    }
+    return undefined
+  }
+
+  // ── Accessors for the settings API ──────────────────────────────────────
+  // The page needs the raw catalog plus the user's stored choices; these expose
+  // exactly that without leaking the adapter's internals.
+
+  /**
+   * The live catalog as the page renders it.
+   *
+   * Unlike {@link listModels}, this is not filtered by the user's on/off
+   * choices: the page must show a switched-off model in order to switch it
+   * back on.
+   *
+   * @returns live catalog entries in upstream order.
+   */
+  async describeCatalog(): Promise<Awaited<ReturnType<QoderModelCatalog['liveModels']>>> {
+    return this.catalog.liveModels()
+  }
+
+  /** Whether the user switched one model off. */
+  isModelDisabled(id: string): boolean {
+    return this.disabledModels.has(id)
+  }
+
+  /** The stored disabled-model set, as a list for rewriting the field. */
+  disabledModelIds(): readonly string[] {
+    return [...this.disabledModels]
+  }
+
+  /** The user's window for one model, or undefined when following upstream. */
+  contextWindowFor(id: string): number | undefined {
+    return this.windowOverride(id)
+  }
+
+  /** The stored per-model window map, for rewriting the field. */
+  modelWindowChoices(): Readonly<Record<string, number>> {
+    return this.modelContextWindows
   }
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
@@ -291,14 +326,13 @@ export class QoderAdapter extends LlmAdapter {
           // The compaction engine and context meter price against the window a
           // request actually uses. Upstream reports three different numbers
           // (per-request ceiling, effective session window, and the list of
-          // selectable windows); `pickContextWindow` implements the configured
-          // choice among them. Reporting a window larger than the session
-          // really runs with would push the auto-compaction threshold past what
-          // the provider accepts.
+          // selectable windows); `pickContextWindow` prefers the user's choice,
+          // then upstream's own session window. Reporting a window larger than
+          // the session really runs with would push the auto-compaction
+          // threshold past what the provider accepts.
           contextWindow: pickContextWindow(
-            this.contextWindowMode,
             live,
-            this.contextWindowOverride,
+            this.windowOverride(target),
             DEFAULT_CONTEXT_WINDOW,
           ),
         },
@@ -313,7 +347,7 @@ export class QoderAdapter extends LlmAdapter {
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
         : { ...modelInfo(provider, configured), id: model },
       context: {
-        contextWindow: this.contextWindowMode === 'custom' ? this.contextWindowOverride : DEFAULT_CONTEXT_WINDOW,
+        contextWindow: this.windowOverride(target) ?? DEFAULT_CONTEXT_WINDOW,
       },
       defaultMaxTokens: this.defaultMaxTokens,
       ...reasoning === undefined ? {} : { reasoning },

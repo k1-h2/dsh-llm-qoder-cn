@@ -14,10 +14,35 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { ServerResponse, IncomingMessage } from 'node:http'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { QoderAdapter, QODER_BYOK_PROVIDER, QODER_PROVIDER } from './adapter.ts'
+import { API_PREFIX, handleApi } from './api.ts'
 import type { ParsedConfig } from './config.ts'
 import { Config as ConfigSchema, resolveConfig } from './config.ts'
+
+/**
+ * The web carrier this plugin mounts its settings API on.
+ *
+ * Declared locally rather than imported from `@deepseek-ai/dsh-host-webserver`
+ * so the plugin keeps only the peer dependencies it actually needs: a
+ * deployment that boots without a web server must still load this plugin, and
+ * an import of the carrier package would make it a hard requirement.
+ */
+interface WebServerService {
+  register(route: {
+    kind: 'exact' | 'prefix'
+    path: string
+    handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
+  }): () => void
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Present only in web compositions; reached through a nested inject. */
+    webServer?: WebServerService
+  }
+}
 
 export { QoderAdapter, QODER_PROVIDER, QODER_BYOK_PROVIDER, pickContextWindow } from './adapter.ts'
 export type { ImageRequestReader, QoderAdapterOptions } from './adapter.ts'
@@ -25,15 +50,13 @@ export { QoderSession, QoderSessionManager } from './session.ts'
 export type { SessionRuntimeOptions } from './session.ts'
 export { QODER_MODELS, MODEL_ALIASES, resolveQoderModelId, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from './catalog.ts'
 export { QoderModelCatalog } from './models.ts'
-export {
-  CONTEXT_WINDOW_MODES, CONTEXT_WINDOW_MODE_NAMES, BYOK_ROUTES, BYOK_ROUTE_NAMES,
-  isContextWindowMode, resolveConfig,
-} from './config.ts'
+export { API_PREFIX, buildRows, handleApi } from './api.ts'
+export { BYOK_ROUTES, BYOK_ROUTE_NAMES, resolveConfig } from './config.ts'
 // The authoring shape is re-exported as `ConfigShape` because this module also
 // exports the `Config` *schema* value the loader reads; one module cannot
 // re-export a type and declare a value under the same name.
 export type {
-  Config as ConfigShape, ParsedConfig, ResolvedConfig, ContextWindowMode, ByokRoute,
+  Config as ConfigShape, ParsedConfig, ResolvedConfig, ByokRoute,
 } from './config.ts'
 
 /** Cordis plugin name; must match the `id` used by `cordis.patch.yml`. */
@@ -82,10 +105,8 @@ export function apply(ctx: Context, config: ParsedConfig): void {
     coldMaxTurns: resolved.coldMaxTurns,
     catalogFetchTimeoutMs: resolved.catalogFetchTimeoutMs,
     byokRoute: resolved.byokRoute,
-    contextWindowMode: resolved.contextWindowMode,
-    contextWindowOverride: resolved.contextWindowOverride,
+    modelContextWindows: resolved.modelContextWindows,
     defaultMaxTokens: resolved.defaultMaxTokens,
-    enabledModels: resolved.enabledModels,
     disabledModels: resolved.disabledModels,
     modelAliases: resolved.modelAliases,
     defaultReasoningEffort: resolved.defaultReasoningEffort,
@@ -134,13 +155,24 @@ export function apply(ctx: Context, config: ParsedConfig): void {
   // subprocesses are owned by the adapter and must close with the plugin.
   ctx.effect(() => () => adapter.close(), 'llm-qoder-cn.sessions')
 
-  // Surface the effective context policy once at mount: the compaction
-  // threshold the harness derives is invisible otherwise, and picking a
-  // window larger than the session really uses is the one setting that can
-  // quietly break automatic compaction.
-  ctx.logger?.info(
-    `llm-qoder-cn: contextWindow=${resolved.contextWindowMode}`
-    + (resolved.contextWindowMode === 'custom' ? ` (${resolved.contextWindowOverride} tokens)` : '')
-    + `, compaction threshold ≈ ${Math.round(resolved.compactionThresholdHint * 100)}% of that window`,
-  )
+  // The settings page's data source: the live catalog joined with the user's
+  // on/off and window choices. Served from its own route because the catalog
+  // comes from the CLI and cannot ride the config form.
+  //
+  // `webServer` publishes after plugin load, so this pends on a nested fiber
+  // rather than reading the service at apply time — a `ctx.get('webServer')`
+  // here answers undefined in a real web composition.
+  ctx.inject(['webServer'], (scope) => {
+    const server = scope.webServer
+    if (server === undefined) return
+    scope.effect(
+      () => server.register({
+        kind: 'prefix',
+        path: API_PREFIX,
+        handler: (req, res) => { void handleApi(req, res, adapter) },
+      }),
+      'llm-qoder-cn: settings api',
+    )
+    ctx.logger?.info(`llm-qoder-cn: 设置接口已挂载于 ${API_PREFIX}`)
+  })
 }

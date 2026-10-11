@@ -1,0 +1,11 @@
+packages:
+  - .
+
+nodeLinker: hoisted
+
+# The Qoder CN SDK's postinstall downloads the qoderclicn worker runtime. It is
+# optional — the SDK falls back to the system `qoderclicn` on PATH — but
+# allowing it here makes a dev install behave exactly like a user's
+# `dsh plugin add`, which is the configuration worth testing against.
+allowBuilds:
+  '@qodercn-ai/qodercn-agent-sdk': true

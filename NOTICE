@@ -1,0 +1,59 @@
+# Notice / 致谢与出处
+
+本仓库以 [MIT](./LICENSE) 许可发布。
+
+## 上游项目
+
+本插件是 **[JiamingZang/dsh-llm-qodersdk](https://github.com/JiamingZang/dsh-llm-qodersdk)**
+（npm 包名 `@jiamingzang/dsh-llm-qoder`，MIT，版本 0.2.0）的衍生作品。
+
+上游同样以 MIT 发布。MIT 允许使用、复制、修改、合并、发布、分发、再许可和销售副本，
+唯一条件是**保留版权声明与许可声明**。本仓库据此：
+
+- 完整保留上游 MIT 许可原文（见 `LICENSE.original`，即上游 `LICENSE` 的逐字副本）；
+- 在上方署名上游项目与作者；
+- 以 MIT 继续发布本衍生作品。
+
+MIT 不要求衍生作品沿用同一许可（无 copyleft 条款），但本项目选择继续使用 MIT，
+以便与上游及 DSH 生态保持一致。
+
+## 本仓库相对上游的改动
+
+1. **接入官方 CN SDK**：上游依赖 `@qoder-ai/qoder-agent-sdk`（国际版），其编译期品牌
+   硬编码为 `global`（`cliCommands: qodercli/qoder`、配置目录 `.qoder`、
+   `QODER_PERSONAL_ACCESS_TOKEN`），在只装了 `qoderclicn` 的机器上无法工作。
+   本项目改用官方 **CN** 包 `@qodercn-ai/qodercn-agent-sdk`（`brand: cn`、
+   `cliCommands: qoderclicn/qodercn`、配置目录 `.qoder-cn`、`QODERCN_*`）。
+   两个包的 `dist/*.d.ts` 经比对逐字节相同，故 API 层面为直接替换。
+2. **独立 provider id**：`qoder-cn` / `qoder-cn-byok`（上游为 `qoder` / `qoder-byok`），
+   以便与上游插件在同一 profile 中共存而不冲突。
+3. **可配置设置面**：新增 `src/config.ts`，声明 18 个带说明的配置项。DSH 的 settings
+   服务会读取插件导出的 `Config` schema 并自动生成设置页（`autoGenerate` 默认为真），
+   因此本插件**无需自带 client bundle 即可拥有原生设置界面**。上游仅暴露
+   `maxSessions` 与 `modelCacheTtlSeconds` 两项且未提供界面。
+4. **上下文窗口可选**：新增 `contextWindowMode`（`auto` / `default` / `max` / `custom`）。
+   上游固定使用 `defaultContextWindow`（通常 200K）；现在可显式选择 1M 上限或自定义值。
+   选大窗口会推迟 harness 的自动压缩阈值，因此 `pickContextWindow` 的注释里写明了取舍。
+5. **模型过滤与别名**：新增 `enabledModels` / `disabledModels` 允许与拒绝清单
+   （均支持用别名书写）、`modelAliases` 自定义别名映射。
+6. **超时可调**：`toolResultTimeoutSeconds`、`catalogFetchTimeoutSeconds`、
+   `abortGraceSeconds`、`coldMaxTurns` 由硬编码常量改为配置项。
+7. **修正上游死代码**：上游 `render.ts` 导出了 `renderIdentityAppend`，但全仓库无调用点，
+   构建产物中亦不存在（被 tree-shaking 移除），即该身份覆盖从未生效。本项目将其真正接入
+   `identityOverride`，并**默认关闭**——因为该段提示会指示模型否认自身来源，
+   属于应当显式选择而非默认继承的产品决策。
+
+## 上游的原始文件
+
+上游 `LICENSE` 的逐字副本保留在 [`LICENSE.original`](./LICENSE.original)，以满足
+MIT 的版权声明保留要求。
+
+## 商标与免责声明
+
+Qoder、Qoder CN、DeepSeek、DeepSeek Harness 等名称与商标归各自权利人所有，
+此处仅作兼容性描述之用。本项目与 Qoder（通义云启）、DeepSeek 官方均无关联，
+是非官方社区适配器。
+
+**使用风险自负。** 本插件通过官方 Agent SDK 复用本机 `qoderclicn` 登录态，
+不逆向协议、不伪造客户端身份、不自动化领取签到积分；但"以订阅额度驱动第三方宿主"
+是否符合你的 Qoder 服务条款，由你自行判断。详见 README 的「合规与风险」一节。

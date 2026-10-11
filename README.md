@@ -26,28 +26,20 @@ v = zn ? { cliCommands: ["qoderclicn"], configDirName: ".qoder-cn" }
 
 前置：本机已安装并登录 Qoder CN CLI（`qoderclicn --version` 可运行）。
 
-```sh
-dsh plugin --profile web add github:k1-h2/dsh-llm-qoder-cn
-# 或发布后从 npm 装
-dsh plugin --profile web add dsh-llm-qoder-cn
-```
+点侧边栏的 **插件 → 添加插件**，把下面任意一个填进输入框，然后点「安装」：
 
-首次安装要批准 SDK 的 postinstall（它下载 `qoderclicn` worker runtime）。pnpm 11+ 默认拦截，
-会在 profile 的 `pnpm-workspace.yaml` 写入占位，**先改成 `true` 再执行 `add`**：
+- `github:k1-h2/dsh-llm-qoder-cn`
+- `https://github.com/k1-h2/dsh-llm-qoder-cn`
+- 本地目录路径（装自己改过的版本时用）
 
-```yaml
-allowBuilds:
-  '@qodercn-ai/qodercn-agent-sdk': true
-```
+**安装源**保持默认即可，它只决定 npm 依赖从哪里下载。
 
-> ⚠️ **顺序错了会白装一次。** 若在拦截那一步失败，依赖其实已进 `node_modules`，此时重跑
-> `add` 会显示 "Already up to date" 并**跳过 bundle 注册**——插件在，但 `--dump-config`
-> 里看不到、也不生效。补救：删掉 profile 的 `node_modules/` 与 `pnpm-lock.yaml`，保留
-> `allowBuilds`，再 `add`。
->
-> 不批准也能用：SDK 会回退到 PATH 上的系统 `qoderclicn`。
+SDK 声明了安装脚本（下载它自己的 worker runtime），pnpm 默认不执行，所以界面会弹出
+**「需要允许安装脚本」**——点「**允许这些脚本并重试**」就行。授权记在当前 profile 里，只问这
+一次；不授权也能用，SDK 会回退到 PATH 上的系统 `qoderclicn`。
 
-装完**重启 DSH**：模型选择器出现 `Qoder CN` 分组，设置里出现 **Qoder CN** 一项。
+装完按界面提示**重启 DSH**（「已安装，下次启动后加载」）。重启后模型选择器出现 `Qoder CN`
+分组，设置里出现 **Qoder CN** 一项。
 
 ## 设置页
 

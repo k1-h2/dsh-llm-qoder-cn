@@ -64,15 +64,12 @@ window.__ModuleLoader__.load({
       show: '展开',
       hide: '收起',
       reset: '恢复默认',
-      on: '开',
-      off: '关',
       windowWarn: '窗口越大，DSH 的自动压缩触发得越晚。若对话经常超限，请选较小的窗口。',
       advancedFields: {
         displayName: '分组名称',
         maxSessions: '并发会话数',
         modelCacheTtlSeconds: '模型列表缓存（秒）',
         defaultReasoningEffort: '默认思考档位',
-        identityOverride: '隐藏 Qoder 身份',
         defaultMaxTokens: '默认输出上限',
         toolResultTimeoutSeconds: '工具结果等待（秒）',
         catalogFetchTimeoutSeconds: '模型列表超时（秒）',
@@ -115,15 +112,12 @@ window.__ModuleLoader__.load({
       show: 'Show',
       hide: 'Hide',
       reset: 'Reset',
-      on: 'on',
-      off: 'off',
       windowWarn: 'A larger window delays DSH\u2019s auto-compaction. Pick a smaller one if conversations overflow.',
       advancedFields: {
         displayName: 'Group name',
         maxSessions: 'Concurrent sessions',
         modelCacheTtlSeconds: 'Catalog cache (s)',
         defaultReasoningEffort: 'Default reasoning effort',
-        identityOverride: 'Hide Qoder identity',
         defaultMaxTokens: 'Default output cap',
         toolResultTimeoutSeconds: 'Tool result wait (s)',
         catalogFetchTimeoutSeconds: 'Catalog timeout (s)',
@@ -150,7 +144,6 @@ window.__ModuleLoader__.load({
       ['maxSessions', 'number'],
       ['modelCacheTtlSeconds', 'number'],
       ['defaultReasoningEffort', 'text'],
-      ['identityOverride', 'boolean'],
       ['defaultMaxTokens', 'number'],
       ['toolResultTimeoutSeconds', 'number'],
       ['catalogFetchTimeoutSeconds', 'number'],
@@ -629,17 +622,7 @@ window.__ModuleLoader__.load({
         const overridden = user !== null && typeof user === 'object' && Object.hasOwn(user, key)
 
         let control
-        if (kind === 'boolean') {
-          control = h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
-            h('input', {
-              type: 'checkbox',
-              checked: current === true,
-              disabled: !writable,
-              onChange: event => set(key, event.target.checked),
-            }),
-            h('span', { style: css.note }, current === true ? t('on') : t('off')),
-          )
-        } else if (kind === 'union') {
+        if (kind === 'union') {
           const members = enumMembers(node, refs)
           control = h('select', {
             style: css.select,

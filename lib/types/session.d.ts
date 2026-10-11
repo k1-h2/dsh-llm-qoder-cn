@@ -28,12 +28,6 @@ export interface SessionRuntimeOptions {
     toolResultTimeoutMs?: Live<number>;
     /** How long the inner process gets to acknowledge an abort. */
     abortGraceMs?: Live<number>;
-    /**
-     * Prepend the identity block to the host system prompt. Off by default: the
-     * block instructs the inner model to deny being Qoder, which is a deliberate
-     * product choice rather than a neutral default.
-     */
-    identityOverride?: Live<boolean>;
 }
 /**
  * One user-turn content block on the streaming-input channel. Text is the
@@ -154,7 +148,6 @@ export declare class QoderSession {
     /** Per-session runtime knobs, resolved from the plugin config at creation. */
     private readonly toolResultTimeoutMs;
     private readonly abortGraceMs;
-    private readonly identityOverride;
     constructor(sessionId: string, initialModel: string, runtime?: SessionRuntimeOptions);
     /** Spawn the inner process (first stream only) and attach the consumer. */
     private ensureStarted;
@@ -163,14 +156,6 @@ export declare class QoderSession {
         reasoningEffort?: string;
     }): void;
     /** Record the host system prompt; effective only before the process spawns. */
-    /**
-     * Record the host system prompt; effective only before the process spawns.
-     *
-     * When `identityOverride` is on, the identity block is prepended here rather
-     * than in the adapter so it applies to the warm-session path and the cold
-     * side-channel path alike, and so the prompt the harness believes it sent
-     * stays untouched in its own records.
-     */
     setSystem(system: string | undefined): void;
     /**
      * Record the host session workspace; effective only before the process

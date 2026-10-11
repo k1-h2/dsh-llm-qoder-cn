@@ -93,7 +93,6 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     modelCacheTtlSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     modelAliases: import("@deepseek-ai/schemastery").default<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
     defaultReasoningEffort: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
-    identityOverride: import("@deepseek-ai/schemastery").default<boolean, boolean, "volatile-defined">;
     defaultMaxTokens: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     toolResultTimeoutSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     catalogFetchTimeoutSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
@@ -109,7 +108,6 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
     modelCacheTtlSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     modelAliases: import("@deepseek-ai/schemastery").default<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
     defaultReasoningEffort: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
-    identityOverride: import("@deepseek-ai/schemastery").default<boolean, boolean, "volatile-defined">;
     defaultMaxTokens: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     toolResultTimeoutSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     catalogFetchTimeoutSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;

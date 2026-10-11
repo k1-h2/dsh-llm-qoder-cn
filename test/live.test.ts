@@ -133,13 +133,11 @@ describe('live config', () => {
       disabledModels: live.disabledModels(),
       modelContextWindows: live.modelContextWindows(),
       maxSessions: live.maxSessions(),
-      identityOverride: live.identityOverride(),
       defaultReasoningEffort: live.defaultReasoningEffort(),
     }).toEqual({
       disabledModels: snapshot.disabledModels,
       modelContextWindows: snapshot.modelContextWindows,
       maxSessions: snapshot.maxSessions,
-      identityOverride: snapshot.identityOverride,
       defaultReasoningEffort: snapshot.defaultReasoningEffort,
     })
   })
@@ -148,7 +146,6 @@ describe('live config', () => {
     const live = liveConfig(undefined)
     expect(live.disabledModels()).toEqual([])
     expect(live.maxSessions()).toBe(8)
-    expect(live.identityOverride()).toBe(false)
     expect(live.defaultReasoningEffort()).toBeUndefined()
   })
 })

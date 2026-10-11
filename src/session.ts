@@ -21,7 +21,7 @@ import type { CanUseTool, Query } from '@qodercn-ai/qodercn-agent-sdk'
 import { jsonSchemaToShape } from './jsonschema.ts'
 import type { Live } from './live.ts'
 import { readLive } from './live.ts'
-import { feedImageRefs, feedTextLength, renderIdentityAppend, renderInitialFeed } from './render.ts'
+import { feedImageRefs, feedTextLength, renderInitialFeed } from './render.ts'
 
 /** MCP server name this adapter exposes host tools under. */
 export const MCP_SERVER_NAME = 'dsh-host'
@@ -52,12 +52,6 @@ export interface SessionRuntimeOptions {
   toolResultTimeoutMs?: Live<number>
   /** How long the inner process gets to acknowledge an abort. */
   abortGraceMs?: Live<number>
-  /**
-   * Prepend the identity block to the host system prompt. Off by default: the
-   * block instructs the inner model to deny being Qoder, which is a deliberate
-   * product choice rather than a neutral default.
-   */
-  identityOverride?: Live<boolean>
 }
 
 /**
@@ -298,7 +292,6 @@ export class QoderSession {
   /** Per-session runtime knobs, resolved from the plugin config at creation. */
   private readonly toolResultTimeoutMs: number
   private readonly abortGraceMs: number
-  private readonly identityOverride: boolean
 
   constructor(
     readonly sessionId: string,
@@ -308,7 +301,6 @@ export class QoderSession {
     this.model = initialModel
     this.toolResultTimeoutMs = readLive(runtime.toolResultTimeoutMs, DEFAULT_TOOL_RESULT_TIMEOUT_MS)
     this.abortGraceMs = readLive(runtime.abortGraceMs, DEFAULT_ABORT_GRACE_MS)
-    this.identityOverride = readLive(runtime.identityOverride, false) === true
   }
 
   /** Spawn the inner process (first stream only) and attach the consumer. */
@@ -347,16 +339,8 @@ export class QoderSession {
   }
 
   /** Record the host system prompt; effective only before the process spawns. */
-  /**
-   * Record the host system prompt; effective only before the process spawns.
-   *
-   * When `identityOverride` is on, the identity block is prepended here rather
-   * than in the adapter so it applies to the warm-session path and the cold
-   * side-channel path alike, and so the prompt the harness believes it sent
-   * stays untouched in its own records.
-   */
   setSystem(system: string | undefined): void {
-    this.hostSystem = this.identityOverride ? renderIdentityAppend(system) : system
+    this.hostSystem = system
   }
 
   /**
@@ -903,11 +887,7 @@ export class QoderSessionManager {
 
   /** One-shot turn with no warm state: side channels and cold rebuilds. */
   async *coldStream(options: GenerateOptions, prompt: string, model?: string): AsyncGenerator<StreamChunk> {
-    // The cold path never goes through `setSystem`, so the identity block is
-    // applied here when the deployment asked for it.
-    const systemPrompt = readLive(this.runtime.identityOverride, false) === true
-      ? renderIdentityAppend(options.system)
-      : options.system
+    const systemPrompt = options.system
     const q = query({
       prompt,
       options: {

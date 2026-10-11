@@ -65,8 +65,6 @@ export interface QoderAdapterOptions {
     displayName?: Live<string>;
     /** Display name of the group holding the account's custom models. */
     byokDisplayName?: Live<string>;
-    /** Prepend the identity block to the inner system prompt. */
-    identityOverride?: Live<boolean>;
 }
 /** The primary provider route (the qoder account's built-in models). */
 export declare const QODER_PROVIDER = "qoder-cn";

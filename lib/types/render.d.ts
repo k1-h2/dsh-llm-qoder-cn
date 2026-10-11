@@ -70,8 +70,3 @@ export declare function renderUserTurn(blocks: readonly ContentBlock[]): Feed;
 export declare function renderRefreshed(message: RequestMessage): Feed;
 /** Render a host system-prompt update mid-session. */
 export declare function renderSystemUpdate(system: string): string;
-/**
- * Identity override appended to the qodercli preset system prompt: the inner
- * model answers as the host's agent, never as Qoder itself.
- */
-export declare function renderIdentityAppend(hostSystem: string | undefined): string;

@@ -79,8 +79,6 @@ export interface QoderAdapterOptions {
   displayName?: Live<string>
   /** Display name of the group holding the account's custom models. */
   byokDisplayName?: Live<string>
-  /** Prepend the identity block to the inner system prompt. */
-  identityOverride?: Live<boolean>
 }
 
 /** Shared empty values, so an unset list or map allocates nothing per read. */
@@ -218,7 +216,6 @@ export class QoderAdapter extends LlmAdapter {
       toolResultTimeoutMs: options.toolResultTimeoutMs,
       abortGraceMs: options.abortGraceMs,
       coldMaxTurns: options.coldMaxTurns,
-      identityOverride: options.identityOverride,
     })
     this.catalog = new QoderModelCatalog(
       options.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS,

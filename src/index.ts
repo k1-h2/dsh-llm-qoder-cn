@@ -181,7 +181,6 @@ export function apply(ctx: Context, config: ParsedConfig): void {
     defaultReasoningEffort: live.defaultReasoningEffort,
     displayName: live.displayName,
     byokDisplayName: live.byokDisplayName,
-    identityOverride: live.identityOverride,
     // Images reach the inner model only through the host attachment store, so
     // this stays a lazy lookup. An unmounted store leaves the adapter with no
     // reader, and images degrade to the harness's own handle text instead of

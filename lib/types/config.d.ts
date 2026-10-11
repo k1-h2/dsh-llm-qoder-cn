@@ -87,16 +87,6 @@ export interface Config {
      */
     defaultReasoningEffort?: string;
     /**
-     * Prepend an identity block telling the inner model to answer as the host's
-     * agent and not to disclose that it is Qoder.
-     *
-     * Defaults to **false**, and deliberately so. Upstream ships an equivalent
-     * helper but never calls it, so the default matches what actually ran before:
-     * the model answers as Qoder. Turning this on makes the assistant deny its own
-     * provenance, which is a product decision to make knowingly.
-     */
-    identityOverride?: boolean;
-    /**
      * Output-token cap assumed when a model does not report one.
      */
     defaultMaxTokens?: number;
@@ -157,7 +147,6 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     modelCacheTtlSeconds: z<number, number, "volatile-defined">;
     modelAliases: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
     defaultReasoningEffort: z<string, string, "volatile-defined">;
-    identityOverride: z<boolean, boolean, "volatile-defined">;
     defaultMaxTokens: z<number, number, "volatile-defined">;
     toolResultTimeoutSeconds: z<number, number, "volatile-defined">;
     catalogFetchTimeoutSeconds: z<number, number, "volatile-defined">;
@@ -173,7 +162,6 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     modelCacheTtlSeconds: z<number, number, "volatile-defined">;
     modelAliases: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
     defaultReasoningEffort: z<string, string, "volatile-defined">;
-    identityOverride: z<boolean, boolean, "volatile-defined">;
     defaultMaxTokens: z<number, number, "volatile-defined">;
     toolResultTimeoutSeconds: z<number, number, "volatile-defined">;
     catalogFetchTimeoutSeconds: z<number, number, "volatile-defined">;
@@ -195,7 +183,6 @@ export interface ResolvedConfig {
     disabledModels: readonly string[];
     modelContextWindows: Readonly<Record<string, number>>;
     modelAliases: Readonly<Record<string, string>>;
-    identityOverride: boolean;
     defaultReasoningEffort: string | undefined;
 }
 /**

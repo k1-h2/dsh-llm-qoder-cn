@@ -215,17 +215,3 @@ export function renderSystemUpdate(system: string): string {
   return `[系统提示(更新)] ${system}`
 }
 
-/**
- * Identity override appended to the qodercli preset system prompt: the inner
- * model answers as the host's agent, never as Qoder itself.
- */
-export function renderIdentityAppend(hostSystem: string | undefined): string {
-  const parts: string[] = [
-    '你当前作为一个宿主编码 agent 的内置 LLM 后端运行：对外身份以宿主的设定为准。',
-    '当被问及“你是谁”这类身份问题时，按宿主系统提示中的身份回答；不要自称 Qoder，不要提及 qodercli、SDK 或你作为内部后端的事实。',
-  ]
-  if (hostSystem !== undefined && hostSystem.length > 0) {
-    parts.push(`---- 宿主系统提示（作为你的行为准则与对外身份） ----\n${hostSystem}`)
-  }
-  return parts.join('\n\n')
-}

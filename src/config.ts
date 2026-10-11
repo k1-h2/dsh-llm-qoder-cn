@@ -98,16 +98,6 @@ export interface Config {
    */
   defaultReasoningEffort?: string
   /**
-   * Prepend an identity block telling the inner model to answer as the host's
-   * agent and not to disclose that it is Qoder.
-   *
-   * Defaults to **false**, and deliberately so. Upstream ships an equivalent
-   * helper but never calls it, so the default matches what actually ran before:
-   * the model answers as Qoder. Turning this on makes the assistant deny its own
-   * provenance, which is a product decision to make knowingly.
-   */
-  identityOverride?: boolean
-  /**
    * Output-token cap assumed when a model does not report one.
    */
   defaultMaxTokens?: number
@@ -175,7 +165,6 @@ export const Config = z.object({
   modelCacheTtlSeconds: z.number().step(1).min(10).max(86_400).default(300).description('模型列表缓存时长（秒）。调小可更快看到账号侧变化。').volatile(),
   modelAliases: z.dict(z.string()).default({}).description('额外的模型别名映射：DSH 侧名称 → Qoder 模型 ID。内置 deepseek-v4-* 别名仍然生效。').volatile(),
   defaultReasoningEffort: z.string().default('').description('请求未指定思考档位时使用的默认档位；留空则用上游默认。').volatile(),
-  identityOverride: z.boolean().default(false).description('让内层模型以宿主 Agent 的身份回答，且不透露自己是 Qoder。默认关闭：开启后助手会否认自身来源，请自行决定。').volatile(),
   defaultMaxTokens: z.number().step(1).min(1).default(32_000).description('模型未声明输出上限时使用的输出上限。').volatile(),
   toolResultTimeoutSeconds: z.number().step(1).min(5).max(3_600).default(120).description('内层模型等待宿主返回工具结果的时限（秒），超时则取消该次工具调用。').volatile(),
   catalogFetchTimeoutSeconds: z.number().step(1).min(1).max(300).default(20).description('拉取模型列表的时限（秒），超时后回退到内置列表。').volatile(),
@@ -198,7 +187,6 @@ export interface ResolvedConfig {
   disabledModels: readonly string[]
   modelContextWindows: Readonly<Record<string, number>>
   modelAliases: Readonly<Record<string, string>>
-  identityOverride: boolean
   defaultReasoningEffort: string | undefined
 }
 
@@ -261,7 +249,6 @@ export function liveConfig(config: ParsedConfig | undefined): LiveConfig {
     disabledModels: () => stringList(field('disabledModels')),
     modelContextWindows: () => numberMap(field('modelContextWindows')),
     modelAliases: () => stringMap(field('modelAliases')),
-    identityOverride: () => field('identityOverride') === true,
     defaultReasoningEffort: () => {
       const raw = field('defaultReasoningEffort')
       const effort = typeof raw === 'string' ? raw.trim() : ''
@@ -297,7 +284,6 @@ export function resolveConfig(config: ParsedConfig | undefined): ResolvedConfig 
     disabledModels: live.disabledModels(),
     modelContextWindows: live.modelContextWindows(),
     modelAliases: live.modelAliases(),
-    identityOverride: live.identityOverride(),
     defaultReasoningEffort: live.defaultReasoningEffort(),
   }
 }

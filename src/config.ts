@@ -15,6 +15,7 @@
  * @module dsh-llm-qoder-cn/config
  */
 
+import { isVolatile } from '@deepseek-ai/cosmokit'
 import z from '@deepseek-ai/schemastery'
 
 /**
@@ -65,7 +66,12 @@ export const BYOK_ROUTE_NAMES: Readonly<Record<ByokRoute, string>> = {
 }
 
 /**
- * The plugin configuration.
+ * The plugin configuration as authored in a profile patch.
+ *
+ * These are the values a user writes; at runtime every one of them arrives
+ * wrapped in a `Volatile<T>` reference (see {@link ConfigSchema}), which
+ * {@link resolveConfig} unwraps. Keep this interface as the authoring shape and
+ * `ResolvedConfig` as the runtime shape.
  *
  * Every field is optional and defaulted, so an empty config — the profile row
  * DSH inserts by default — runs with the tuned defaults below.
@@ -193,37 +199,52 @@ export interface Config {
 /**
  * The configuration schema. This is what DSH turns into the settings page, so
  * the defaults and bounds here are user-visible documentation.
+ *
+ * ## Why every field is `.volatile()`
+ *
+ * DSH's settings service builds its form from `volatileForm(schema)`, which
+ * keeps a field ONLY when the node (or an ancestor) carries `meta.volatile`;
+ * an object whose fields are all non-volatile collapses to `undefined` and the
+ * whole namespace is dropped from `describe()` before any client sees it. A
+ * plugin with a plain schema therefore registers successfully, streams models
+ * correctly, and still shows no settings page anywhere — the namespace never
+ * reaches the wire.
+ *
+ * `.volatile()` also declares the intended semantics: the value is a stable
+ * reference holding immutable data, and edits apply live. That is exactly how
+ * this plugin consumes its config — the adapter reads it at mount, and every
+ * field is a plain scalar, list, or map.
  */
-export const Config: z<Config> = z.object({
+export const Config = z.object({
   // Identity
-  displayName: z.string().default('Qoder CN').description('Name of the primary provider group in the model picker.'),
-  byokDisplayName: z.string().default('Qoder CN 自定义').description('Name of the group holding the account\'s custom models.'),
-  byokRoute: z.union(BYOK_ROUTES).default('separate').description('Whether custom models get their own route or merge into the main one.'),
+  displayName: z.string().default('Qoder CN').description('Name of the primary provider group in the model picker.').volatile(),
+  byokDisplayName: z.string().default('Qoder CN 自定义').description('Name of the group holding the account\'s custom models.').volatile(),
+  byokRoute: z.union(BYOK_ROUTES).default('separate').description('Whether custom models get their own route or merge into the main one.').volatile(),
 
   // Session capacity
-  maxSessions: z.number().step(1).min(1).max(64).default(8).description('Warm inner CLI sessions kept alive; least recently used is closed beyond this cap.'),
-  modelCacheTtlSeconds: z.number().step(1).min(10).max(86_400).default(300).description('Seconds a fetched CLI model catalog stays fresh.'),
+  maxSessions: z.number().step(1).min(1).max(64).default(8).description('Warm inner CLI sessions kept alive; least recently used is closed beyond this cap.').volatile(),
+  modelCacheTtlSeconds: z.number().step(1).min(10).max(86_400).default(300).description('Seconds a fetched CLI model catalog stays fresh.').volatile(),
 
   // Context window
-  contextWindowMode: z.union(CONTEXT_WINDOW_MODES).default('auto').description('Which context window to report: auto (upstream default), default, max (largest available), or custom.'),
-  contextWindowOverride: z.number().step(1).min(1).default(200_000).description('Window in tokens, used only when the mode is custom.'),
-  compactionThresholdHint: z.number().min(0).max(1).default(0.8).description('Advisory compaction ratio logged at startup; the harness owns the real threshold.'),
-  defaultMaxTokens: z.number().step(1).min(1).default(32_000).description('Output-token cap assumed when a model does not report one.'),
+  contextWindowMode: z.union(CONTEXT_WINDOW_MODES).default('auto').description('Which context window to report: auto (upstream default), default, max (largest available), or custom.').volatile(),
+  contextWindowOverride: z.number().step(1).min(1).default(200_000).description('Window in tokens, used only when the mode is custom.').volatile(),
+  compactionThresholdHint: z.number().min(0).max(1).default(0.8).description('Advisory compaction ratio logged at startup; the harness owns the real threshold.').volatile(),
+  defaultMaxTokens: z.number().step(1).min(1).default(32_000).description('Output-token cap assumed when a model does not report one.').volatile(),
 
   // Timeouts
-  toolResultTimeoutSeconds: z.number().step(1).min(5).max(3_600).default(120).description('Seconds the inner model waits for a host tool result before cancelling that call.'),
-  catalogFetchTimeoutSeconds: z.number().step(1).min(1).max(300).default(20).description('Seconds to wait for the CLI model catalog before using the static fallback.'),
-  abortGraceSeconds: z.number().step(1).min(1).max(120).default(5).description('Seconds to wait for the inner process to acknowledge an abort.'),
-  coldMaxTurns: z.number().step(1).min(1).max(32).default(4).description('Maximum inner turns for one side-channel request (titles, compaction).'),
+  toolResultTimeoutSeconds: z.number().step(1).min(5).max(3_600).default(120).description('Seconds the inner model waits for a host tool result before cancelling that call.').volatile(),
+  catalogFetchTimeoutSeconds: z.number().step(1).min(1).max(300).default(20).description('Seconds to wait for the CLI model catalog before using the static fallback.').volatile(),
+  abortGraceSeconds: z.number().step(1).min(1).max(120).default(5).description('Seconds to wait for the inner process to acknowledge an abort.').volatile(),
+  coldMaxTurns: z.number().step(1).min(1).max(32).default(4).description('Maximum inner turns for one side-channel request (titles, compaction).').volatile(),
 
   // Models
-  enabledModels: z.array(z.string()).default([]).description('Allow-list of model ids; empty advertises every model.'),
-  disabledModels: z.array(z.string()).default([]).description('Deny-list of model ids, applied after the allow-list.'),
-  modelAliases: z.dict(z.string()).default({}).description('Extra harness-id → Qoder-model-id aliases, merged over the built-in ones.'),
+  enabledModels: z.array(z.string()).default([]).description('Allow-list of model ids; empty advertises every model.').volatile(),
+  disabledModels: z.array(z.string()).default([]).description('Deny-list of model ids, applied after the allow-list.').volatile(),
+  modelAliases: z.dict(z.string()).default({}).description('Extra harness-id → Qoder-model-id aliases, merged over the built-in ones.').volatile(),
 
   // Behaviour
-  identityOverride: z.boolean().default(false).description('Prepend an identity block telling the inner model to answer as the host agent and not to disclose it is Qoder. Off by default: enabling it makes the assistant deny its own provenance.'),
-  defaultReasoningEffort: z.string().default('').description('Reasoning effort used when a request names none; empty uses upstream\'s default.'),
+  identityOverride: z.boolean().default(false).description('Prepend an identity block telling the inner model to answer as the host agent and not to disclose it is Qoder. Off by default: enabling it makes the assistant deny its own provenance.').volatile(),
+  defaultReasoningEffort: z.string().default('').description('Reasoning effort used when a request names none; empty uses upstream\'s default.').volatile(),
 })
 
 /** Fully-resolved options with every default applied. */
@@ -249,18 +270,27 @@ export interface ResolvedConfig {
 }
 
 /**
+ * A parsed config as it arrives at `apply()`: every field wrapped in the
+ * `Volatile<T>` reference its `.volatile()` schema produces.
+ *
+ * Typed structurally rather than with `Volatile<T>` per field so the module
+ * needs no import of the wrapper type, and so a plain (non-volatile) config
+ * still satisfies it — which is what tests and direct callers pass.
+ */
+export type ParsedConfig = { readonly [K in keyof Config]?: unknown }
+
+/**
  * Apply defaults to a parsed config.
  *
  * `apply()` receives whatever the loader composed, which for a profile row with
- * no explicit `config:` block is `{}`; schemastery defaults are applied by the
- * settings service but not necessarily on every code path, so resolving here
- * keeps the runtime independent of how the config arrived.
+ * no explicit `config:` block is `{}`. Volatile fields arrive as references, so
+ * they are unwrapped first; the rest of the plugin then works with plain values.
  *
  * @param config - the parsed plugin config, possibly partial.
  * @returns the same values with every default filled in.
  */
-export function resolveConfig(config: Config | undefined): ResolvedConfig {
-  const raw = config ?? {}
+export function resolveConfig(config: ParsedConfig | undefined): ResolvedConfig {
+  const raw = unwrap(config ?? {})
   const mode = isContextWindowMode(raw.contextWindowMode) ? raw.contextWindowMode : 'auto'
   const byok = raw.byokRoute === 'inline' ? 'inline' : 'separate'
   const effort = typeof raw.defaultReasoningEffort === 'string' ? raw.defaultReasoningEffort.trim() : ''
@@ -284,6 +314,24 @@ export function resolveConfig(config: Config | undefined): ResolvedConfig {
     identityOverride: raw.identityOverride === true,
     defaultReasoningEffort: effort.length > 0 ? effort : undefined,
   }
+}
+
+/**
+ * Flatten the `Volatile<T>` references a `.volatile()` schema produces.
+ *
+ * A volatile field arrives as `{ get(): T }` rather than `T`, so every read has
+ * to go through `get()`. Doing it once here keeps the rest of the plugin typed
+ * against plain values, which is the same shape upstream adapters consume.
+ *
+ * @param config - parsed plugin config, whose fields may be volatile references.
+ * @returns the same fields as plain values.
+ */
+function unwrap(config: ParsedConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config)) {
+    out[key] = isVolatile(value) ? value.get() : value
+  }
+  return out
 }
 
 function nonEmpty(value: unknown, fallback: string): string {

@@ -48,7 +48,12 @@ export type ByokRoute = (typeof BYOK_ROUTES)[number];
 /** Human labels for {@link BYOK_ROUTES}. */
 export declare const BYOK_ROUTE_NAMES: Readonly<Record<ByokRoute, string>>;
 /**
- * The plugin configuration.
+ * The plugin configuration as authored in a profile patch.
+ *
+ * These are the values a user writes; at runtime every one of them arrives
+ * wrapped in a `Volatile<T>` reference (see {@link ConfigSchema}), which
+ * {@link resolveConfig} unwraps. Keep this interface as the authoring shape and
+ * `ResolvedConfig` as the runtime shape.
  *
  * Every field is optional and defaulted, so an empty config — the profile row
  * DSH inserts by default — runs with the tuned defaults below.
@@ -164,8 +169,61 @@ export interface Config {
 /**
  * The configuration schema. This is what DSH turns into the settings page, so
  * the defaults and bounds here are user-visible documentation.
+ *
+ * ## Why every field is `.volatile()`
+ *
+ * DSH's settings service builds its form from `volatileForm(schema)`, which
+ * keeps a field ONLY when the node (or an ancestor) carries `meta.volatile`;
+ * an object whose fields are all non-volatile collapses to `undefined` and the
+ * whole namespace is dropped from `describe()` before any client sees it. A
+ * plugin with a plain schema therefore registers successfully, streams models
+ * correctly, and still shows no settings page anywhere — the namespace never
+ * reaches the wire.
+ *
+ * `.volatile()` also declares the intended semantics: the value is a stable
+ * reference holding immutable data, and edits apply live. That is exactly how
+ * this plugin consumes its config — the adapter reads it at mount, and every
+ * field is a plain scalar, list, or map.
  */
-export declare const Config: z<Config>;
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    displayName: z<string, string, "volatile-defined">;
+    byokDisplayName: z<string, string, "volatile-defined">;
+    byokRoute: z<"separate" | "inline", "separate" | "inline", "volatile-defined">;
+    maxSessions: z<number, number, "volatile-defined">;
+    modelCacheTtlSeconds: z<number, number, "volatile-defined">;
+    contextWindowMode: z<"custom" | "auto" | "default" | "max", "custom" | "auto" | "default" | "max", "volatile-defined">;
+    contextWindowOverride: z<number, number, "volatile-defined">;
+    compactionThresholdHint: z<number, number, "volatile-defined">;
+    defaultMaxTokens: z<number, number, "volatile-defined">;
+    toolResultTimeoutSeconds: z<number, number, "volatile-defined">;
+    catalogFetchTimeoutSeconds: z<number, number, "volatile-defined">;
+    abortGraceSeconds: z<number, number, "volatile-defined">;
+    coldMaxTurns: z<number, number, "volatile-defined">;
+    enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    disabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    modelAliases: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
+    identityOverride: z<boolean, boolean, "volatile-defined">;
+    defaultReasoningEffort: z<string, string, "volatile-defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    displayName: z<string, string, "volatile-defined">;
+    byokDisplayName: z<string, string, "volatile-defined">;
+    byokRoute: z<"separate" | "inline", "separate" | "inline", "volatile-defined">;
+    maxSessions: z<number, number, "volatile-defined">;
+    modelCacheTtlSeconds: z<number, number, "volatile-defined">;
+    contextWindowMode: z<"custom" | "auto" | "default" | "max", "custom" | "auto" | "default" | "max", "volatile-defined">;
+    contextWindowOverride: z<number, number, "volatile-defined">;
+    compactionThresholdHint: z<number, number, "volatile-defined">;
+    defaultMaxTokens: z<number, number, "volatile-defined">;
+    toolResultTimeoutSeconds: z<number, number, "volatile-defined">;
+    catalogFetchTimeoutSeconds: z<number, number, "volatile-defined">;
+    abortGraceSeconds: z<number, number, "volatile-defined">;
+    coldMaxTurns: z<number, number, "volatile-defined">;
+    enabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    disabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    modelAliases: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
+    identityOverride: z<boolean, boolean, "volatile-defined">;
+    defaultReasoningEffort: z<string, string, "volatile-defined">;
+}>>, "plain">;
 /** Fully-resolved options with every default applied. */
 export interface ResolvedConfig {
     displayName: string;
@@ -188,14 +246,24 @@ export interface ResolvedConfig {
     defaultReasoningEffort: string | undefined;
 }
 /**
+ * A parsed config as it arrives at `apply()`: every field wrapped in the
+ * `Volatile<T>` reference its `.volatile()` schema produces.
+ *
+ * Typed structurally rather than with `Volatile<T>` per field so the module
+ * needs no import of the wrapper type, and so a plain (non-volatile) config
+ * still satisfies it — which is what tests and direct callers pass.
+ */
+export type ParsedConfig = {
+    readonly [K in keyof Config]?: unknown;
+};
+/**
  * Apply defaults to a parsed config.
  *
  * `apply()` receives whatever the loader composed, which for a profile row with
- * no explicit `config:` block is `{}`; schemastery defaults are applied by the
- * settings service but not necessarily on every code path, so resolving here
- * keeps the runtime independent of how the config arrived.
+ * no explicit `config:` block is `{}`. Volatile fields arrive as references, so
+ * they are unwrapped first; the rest of the plugin then works with plain values.
  *
  * @param config - the parsed plugin config, possibly partial.
  * @returns the same values with every default filled in.
  */
-export declare function resolveConfig(config: Config | undefined): ResolvedConfig;
+export declare function resolveConfig(config: ParsedConfig | undefined): ResolvedConfig;

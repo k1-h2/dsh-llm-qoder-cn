@@ -15,9 +15,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import z from '@deepseek-ai/schemastery'
 import { QoderAdapter, QODER_BYOK_PROVIDER, QODER_PROVIDER } from './adapter.ts'
-import type { Config as QoderConfig } from './config.ts'
+import type { ParsedConfig } from './config.ts'
 import { Config as ConfigSchema, resolveConfig } from './config.ts'
 
 export { QoderAdapter, QODER_PROVIDER, QODER_BYOK_PROVIDER, pickContextWindow } from './adapter.ts'
@@ -30,11 +29,11 @@ export {
   CONTEXT_WINDOW_MODES, CONTEXT_WINDOW_MODE_NAMES, BYOK_ROUTES, BYOK_ROUTE_NAMES,
   isContextWindowMode, resolveConfig,
 } from './config.ts'
-// The `Config` *type* is exported under a distinct name because this module also
+// The authoring shape is re-exported as `ConfigShape` because this module also
 // exports the `Config` *schema* value the loader reads; one module cannot
 // re-export a type and declare a value under the same name.
 export type {
-  Config as QoderConfigShape, ResolvedConfig, ContextWindowMode, ByokRoute,
+  Config as ConfigShape, ParsedConfig, ResolvedConfig, ContextWindowMode, ByokRoute,
 } from './config.ts'
 
 /** Cordis plugin name; must match the `id` used by `cordis.patch.yml`. */
@@ -57,17 +56,21 @@ const REQUEST_IMAGE_MAX_BYTES = 1_048_576
  * The plugin's configuration schema, re-exported under the name the loader
  * looks for. DSH reads `runtime.Config` off the plugin fiber to build the
  * settings page, so this must stay the exported `Config` binding.
+ *
+ * Every field is `.volatile()`, which is what makes the namespace appear in
+ * `settings.describe()` at all — see the note on {@link ConfigSchema}.
  */
-export const Config: z<QoderConfig> = ConfigSchema
+export const Config = ConfigSchema
 
 /**
  * Mount the adapter for the lifetime of the plugin.
  *
  * @param ctx - the plugin's cordis context.
- * @param config - parsed plugin config; every field is defaulted by
- *   {@link resolveConfig}, so an empty object is a valid deployment.
+ * @param config - parsed plugin config, whose volatile fields arrive as
+ *   references; {@link resolveConfig} unwraps and defaults them, so an empty
+ *   object is a valid deployment.
  */
-export function apply(ctx: Context, config: QoderConfig): void {
+export function apply(ctx: Context, config: ParsedConfig): void {
   const resolved = resolveConfig(config)
   let attachments: AttachmentStore | undefined
 

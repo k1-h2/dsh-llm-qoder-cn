@@ -80,6 +80,9 @@ window.__ModuleLoader__.load({
         coldMaxTurns: '旁路请求轮次',
         modelAliases: '模型别名',
       },
+      unionLabels: {
+        byokRoute: { separate: '独立分组', inline: '并入主分组' },
+      },
     }
     const en = {
       nav: 'Qoder CN',
@@ -127,6 +130,9 @@ window.__ModuleLoader__.load({
         abortGraceSeconds: 'Abort grace (s)',
         coldMaxTurns: 'Side-channel turns',
         modelAliases: 'Model aliases',
+      },
+      unionLabels: {
+        byokRoute: { separate: 'Separate group', inline: 'Merge into main' },
       },
     }
 
@@ -199,6 +205,44 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Read one schema node's enum members.
+     *
+     * schemastery serializes `z.union([...])` as `type: 'union'` with a `list`
+     * of REF INDICES into the envelope's `refs` table, each resolving to a
+     * `{ type: 'const', value }` node — not to the bare strings. The envelope
+     * is therefore required: reading `list` alone yields indices and renders an
+     * empty control, which is exactly how this dropdown first shipped broken.
+     *
+     * @param node - the union node, or undefined when the field is absent.
+     * @param refs - the envelope's ref table, for the indirect member nodes.
+     * @returns member values in declaration order.
+     */
+    function enumMembers(node, refs) {
+      if (node === undefined || node === null) return []
+      const entries = Array.isArray(node.list) ? node.list : []
+      const out = []
+      for (const entry of entries) {
+        const member = typeof entry === 'number' ? refs?.[entry] : entry
+        const value = member !== null && typeof member === 'object' ? member.value : member
+        if (typeof value === 'string') out.push(value)
+      }
+      return out
+    }
+
+    /**
+     * Human label for one union member, falling back to the raw id.
+     *
+     * Nested so each field reads in the user's language rather than exposing
+     * the wire values (`separate`, `inline`).
+     */
+    function unionLabel(t, key, member) {
+      const table = t('unionLabels') ?? {}
+      const perField = table[key]
+      const label = perField !== null && typeof perField === 'object' ? perField[member] : undefined
+      return typeof label === 'string' ? label : member
+    }
+
     /** Compact label for a token count. */
     function windowLabel(n) {
       if (typeof n !== 'number' || !Number.isFinite(n)) return '—'
@@ -237,6 +281,9 @@ window.__ModuleLoader__.load({
       const [onlyEnabled, setOnlyEnabled] = useState(false)
       const [showAdvanced, setShowAdvanced] = useState(false)
       const ticket = useRef(0)
+      /** Separate from `ticket`: `load()` bumps that one, so sharing it would
+       *  make every write look stale the moment its own refresh landed. */
+      const writeTicket = useRef(0)
 
       const form = ctx.configForms.get(NS)
       const subscribe = useCallback(listener => form.subscribe(listener), [form])
@@ -272,26 +319,30 @@ window.__ModuleLoader__.load({
        * the namespace's revision fence, so every change is ordered and a stale
        * editor is refused rather than silently overwriting. The read afterwards
        * is what makes the row show the adapter's resolved state.
+       *
+       * `busy` is owned by the newest write alone, and is always cleared in
+       * `finally`. It must NOT be gated on the read generation: the read bumps
+       * that same counter, so gating there would leave `busy` set forever and
+       * every control disabled.
        */
       const write = useCallback(async (key, next) => {
-        const mine = ++ticket.current
+        const mine = ++writeTicket.current
         setBusy(true)
         setStatus(t('saving'))
         setError(undefined)
         try {
           const op = next === undefined ? form.unset(key) : form.set(key, next)
           const accepted = await op
-          if (mine !== ticket.current) return
           if (accepted === false) throw new Error(t('saveFailed'))
           await load()
-          if (mine !== ticket.current) return
-          setStatus(t('saved'))
+          if (mine === writeTicket.current) setStatus(t('saved'))
         } catch (err) {
-          if (mine !== ticket.current) return
-          setError(`${t('saveFailed')}：${String(err?.message ?? err)}`)
-          setStatus(undefined)
+          if (mine === writeTicket.current) {
+            setError(`${t('saveFailed')}：${String(err?.message ?? err)}`)
+            setStatus(undefined)
+          }
         } finally {
-          if (mine === ticket.current) setBusy(false)
+          if (mine === writeTicket.current) setBusy(false)
         }
       }, [form, load, t])
 
@@ -393,6 +444,7 @@ window.__ModuleLoader__.load({
         h('h2', { style: css.h2 }, t('title')),
         h('p', { style: css.intro }, t('intro')),
 
+        // Search row: the field grows, the checkbox sits beside it.
         h('div', { style: css.bar },
           h('input', {
             style: { ...css.input, ...css.search },
@@ -400,10 +452,16 @@ window.__ModuleLoader__.load({
             value: query,
             onChange: event => setQuery(event.target.value),
           }),
-          h('label', { style: { ...css.note, display: 'flex', alignItems: 'center', gap: '6px' } },
+          h('label', { style: { ...css.note, display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' } },
             h('input', { type: 'checkbox', checked: onlyEnabled, onChange: event => setOnlyEnabled(event.target.checked) }),
             t('onlyEnabled'),
           ),
+        ),
+
+        // Action row: all four buttons on one line, count pinned to the right.
+        // `nowrap` keeps them together; the count takes the remaining space so
+        // nothing wraps to a second line.
+        h('div', { style: { ...css.bar, flexWrap: 'nowrap' } },
           h('button', { style: css.btn, disabled: busy, onClick: () => void load() }, t('refresh')),
           h('button', {
             style: css.btn,
@@ -477,15 +535,13 @@ window.__ModuleLoader__.load({
             h('span', { style: css.note }, current === true ? t('on') : t('off')),
           )
         } else if (kind === 'union') {
-          const members = Array.isArray(node.list)
-            ? node.list.map(entry => (entry !== null && typeof entry === 'object' ? entry.value : entry)).filter(v => typeof v === 'string')
-            : []
+          const members = enumMembers(node, refs)
           control = h('select', {
             style: css.select,
             value: current === undefined ? '' : String(current),
             disabled: !writable,
             onChange: event => set(key, event.target.value),
-          }, members.map(m => h('option', { key: m, value: m }, m)))
+          }, members.map(m => h('option', { key: m, value: m }, unionLabel(t, key, m))))
         } else if (kind === 'json') {
           control = h('input', {
             style: { ...css.input, fontFamily: 'ui-monospace, monospace' },

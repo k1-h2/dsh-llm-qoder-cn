@@ -2,7 +2,7 @@
   "name": "dsh-llm-qoder-cn",
   "displayName": "Qoder CN (Agent SDK)",
   "description": "DeepSeek Harness LLM adapter for Qoder CN subscriptions, built on the official @qodercn-ai/qodercn-agent-sdk. Reuses the local qoderclicn login, exposes a fully configurable settings surface (context window, session pool, timeouts, model allow/deny lists, aliases).",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
   "license": "MIT",
   "author": "",

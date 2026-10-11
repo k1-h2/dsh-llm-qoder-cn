@@ -23,6 +23,21 @@ interface CatalogSnapshot {
   models: readonly ModelInfo[]
 }
 
+/**
+ * Last successful catalog, shared by every {@link QoderModelCatalog} in this
+ * process.
+ *
+ * A settings write makes DSH restart the plugin
+ * (`fiber.update` → `restart()` → `apply()`), so the replacement adapter starts
+ * with an empty cache. Without this, the very next settings read cold-starts the
+ * Qoder CLI — several seconds of spinner after a click that should feel instant,
+ * and the reason a change can look like it was ignored.
+ *
+ * The entry carries its own timestamp and is only used while it is still within
+ * the requesting catalog's TTL, so normal freshness is unchanged.
+ */
+let sharedSnapshot: CatalogSnapshot | undefined
+
 /** Cached live CLI catalog with a static fallback. */
 export class QoderModelCatalog {
   private cached: CatalogSnapshot | undefined
@@ -40,15 +55,25 @@ export class QoderModelCatalog {
 
   /** Raw live entries; the stale snapshot when a refresh fails, else nothing. */
   async liveModels(): Promise<readonly ModelInfo[]> {
-    const cached = this.cached
-    if (cached !== undefined && Date.now() - cached.at < this.ttlMs) return cached.models
+    const fresh = (snapshot: CatalogSnapshot | undefined): boolean =>
+      snapshot !== undefined && Date.now() - snapshot.at < this.ttlMs
+    // Own cache first, then the process-wide one a previous adapter left behind.
+    const cached = this.cached ?? sharedSnapshot
+    if (fresh(cached) && cached !== undefined) {
+      this.cached = cached
+      return cached.models
+    }
     this.inflight ??= this.fetch().finally(() => { this.inflight = undefined })
     try {
       const models = await this.inflight
-      this.cached = { at: Date.now(), models }
+      const snapshot: CatalogSnapshot = { at: Date.now(), models }
+      this.cached = snapshot
+      sharedSnapshot = snapshot
       return models
     } catch {
-      return this.cached?.models ?? []
+      // A failed refresh keeps serving the last good list rather than dropping
+      // to the static fallback, which would hide the account's real models.
+      return (this.cached ?? sharedSnapshot)?.models ?? []
     }
   }
 

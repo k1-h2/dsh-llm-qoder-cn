@@ -66,9 +66,7 @@ window.__ModuleLoader__.load({
       off: '关',
       windowWarn: '窗口越大，DSH 的自动压缩触发得越晚。若对话经常超限，请选较小的窗口。',
       advancedFields: {
-        byokRoute: '自定义模型展示方式',
         displayName: '分组名称',
-        byokDisplayName: '自定义分组名称',
         maxSessions: '并发会话数',
         modelCacheTtlSeconds: '模型列表缓存（秒）',
         defaultReasoningEffort: '默认思考档位',
@@ -117,9 +115,7 @@ window.__ModuleLoader__.load({
       off: 'off',
       windowWarn: 'A larger window delays DSH\u2019s auto-compaction. Pick a smaller one if conversations overflow.',
       advancedFields: {
-        byokRoute: 'Custom model grouping',
         displayName: 'Group name',
-        byokDisplayName: 'Custom group name',
         maxSessions: 'Concurrent sessions',
         modelCacheTtlSeconds: 'Catalog cache (s)',
         defaultReasoningEffort: 'Default reasoning effort',
@@ -136,11 +132,17 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /** Scalars shown under Advanced, in order, with how to render each. */
+    /**
+     * Scalars shown under Advanced, in order, with how to render each.
+     *
+     * `byokRoute` and `byokDisplayName` are deliberately absent. They only
+     * affect *custom* (BYOK) models the account added itself, which most
+     * accounts — this one included — do not have; with none, the secondary
+     * route advertises nothing and both fields change nothing a user can see.
+     * They remain in the Config schema for a deployment that needs them.
+     */
     const ADVANCED = [
-      ['byokRoute', 'union'],
       ['displayName', 'text'],
-      ['byokDisplayName', 'text'],
       ['maxSessions', 'number'],
       ['modelCacheTtlSeconds', 'number'],
       ['defaultReasoningEffort', 'text'],
@@ -296,36 +298,74 @@ window.__ModuleLoader__.load({
       const describeSnapshot = useSyncExternalStore(describeSubscribe, describeRead)
       useEffect(() => { describeFace.ensure().catch(() => undefined) }, [describeFace])
 
+      const fetchModels = useCallback(async () => {
+        const payload = await api('/models')
+        return Array.isArray(payload?.models) ? payload.models : []
+      }, [])
+
       const load = useCallback(async () => {
         setError(undefined)
         const mine = ++ticket.current
         try {
-          const payload = await api('/models')
+          const rows = await fetchModels()
           if (mine !== ticket.current) return
-          setModels(Array.isArray(payload?.models) ? payload.models : [])
+          setModels(rows)
         } catch (err) {
           if (mine !== ticket.current) return
           setError(String(err?.message ?? err))
           setModels(previous => previous ?? [])
         }
-      }, [])
+      }, [fetchModels])
 
       useEffect(() => { void load() }, [load])
 
       /**
-       * Apply one change through the shared config form, then re-read the list.
+       * Re-read until the list reflects what was just written, or give up.
+       *
+       * A settings write makes the host restart the plugin, so the state the
+       * route serves settles a moment after the write is accepted. Reading once
+       * can therefore return the previous state and make a successful change
+       * look ignored — the reported "can't enable anything". Retrying briefly
+       * turns that window into a short wait.
+       *
+       * @param verify - whether the rows already show the intended change.
+       * @param attempts - how many reads to try before accepting what arrived.
+       * @returns the last rows read, or undefined when every read failed.
+       */
+      const loadUntil = useCallback(async (verify, attempts = 8) => {
+        let rows
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          try {
+            rows = await fetchModels()
+          } catch (err) {
+            setError(String(err?.message ?? err))
+            return undefined
+          }
+          setModels(rows)
+          if (verify === undefined || verify(rows)) return rows
+          await new Promise(resolve => setTimeout(resolve, 150 + attempt * 120))
+        }
+        return rows
+      }, [fetchModels])
+
+      /**
+       * Apply one change through the shared config form, then re-read until the
+       * list reflects it.
        *
        * The write goes through `configForms`, not the API route: that form owns
        * the namespace's revision fence, so every change is ordered and a stale
-       * editor is refused rather than silently overwriting. The read afterwards
-       * is what makes the row show the adapter's resolved state.
+       * editor is refused rather than silently overwriting.
        *
        * `busy` is owned by the newest write alone, and is always cleared in
        * `finally`. It must NOT be gated on the read generation: the read bumps
-       * that same counter, so gating there would leave `busy` set forever and
-       * every control disabled.
+       * that counter, so gating there would leave `busy` set forever and every
+       * control disabled.
+       *
+       * @param key - the config field to write.
+       * @param next - the value, or undefined to clear the field.
+       * @param verify - whether the re-read list already shows this change.
        */
-      const write = useCallback(async (key, next) => {
+      const write = useCallback(async (key, next, verify) => {
         const mine = ++writeTicket.current
         setBusy(true)
         setStatus(t('saving'))
@@ -334,7 +374,7 @@ window.__ModuleLoader__.load({
           const op = next === undefined ? form.unset(key) : form.set(key, next)
           const accepted = await op
           if (accepted === false) throw new Error(t('saveFailed'))
-          await load()
+          await loadUntil(verify)
           if (mine === writeTicket.current) setStatus(t('saved'))
         } catch (err) {
           if (mine === writeTicket.current) {
@@ -344,7 +384,7 @@ window.__ModuleLoader__.load({
         } finally {
           if (mine === writeTicket.current) setBusy(false)
         }
-      }, [form, load, t])
+      }, [form, loadUntil, t])
 
       /**
        * Write the whole disabled-model list, derived from the rows the user
@@ -354,7 +394,7 @@ window.__ModuleLoader__.load({
         const next = new Set(rows.filter(m => !m.enabled).map(m => m.id))
         if (enabled) next.delete(id)
         else next.add(id)
-        return write('disabledModels', [...next])
+        return write('disabledModels', [...next], list => list.some(m => m.id === id && m.enabled === enabled))
       }, [write])
 
       /** Write the whole per-model window map. */
@@ -363,7 +403,12 @@ window.__ModuleLoader__.load({
         for (const m of rows) if (m.override !== undefined) next[m.id] = m.override
         if (window === undefined) delete next[id]
         else next[id] = window
-        return write('modelContextWindows', next)
+        return write(
+          'modelContextWindows',
+          next,
+          list => list.some(m => m.id === id
+            && (window === undefined ? m.override === undefined : m.override === window)),
+        )
       }, [write])
 
       const all = models ?? []
@@ -466,12 +511,12 @@ window.__ModuleLoader__.load({
           h('button', {
             style: css.btn,
             disabled: busy || all.every(m => m.enabled),
-            onClick: () => void write('disabledModels', []),
+            onClick: () => void write('disabledModels', [], list => list.every(m => m.enabled)),
           }, t('selectAll')),
           h('button', {
             style: css.btn,
             disabled: busy || enabledTotal === 0,
-            onClick: () => void write('disabledModels', all.map(m => m.id)),
+            onClick: () => void write('disabledModels', all.map(m => m.id), list => list.every(m => !m.enabled)),
           }, t('selectNone')),
           h('span', { style: css.count }, `${t('enabledCount')} ${enabledTotal} / ${all.length}`),
         ),

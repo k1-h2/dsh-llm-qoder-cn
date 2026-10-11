@@ -24,7 +24,27 @@ v = zn ? { cliCommands: ["qoderclicn"], configDirName: ".qoder-cn" }
 
 ## 安装
 
-前置：本机已安装并登录 Qoder CN CLI（`qoderclicn --version` 可运行）。
+### 第一步：装好并登录 Qoder CN CLI
+
+插件不持有任何凭据，内层会话直接复用本机 CLI 的登录态（SDK 的 `qodercliAuth()`），所以 CLI
+必须**先装好、先登录**，插件才可能工作。
+
+```bash
+npm install -g @qodercn-ai/qoderclicn   # CLI 本体，官网 https://qoder.com/cli
+qoderclicn --version                    # 能打印版本号才算装上
+qoderclicn login                        # 拉起浏览器，用 Qoder CN 账号登录
+qoderclicn status                       # 列出 Username / User Type 即登录成功
+qoderclicn --list-models                # 列出订阅实际可用的模型
+```
+
+- `login` 没有非交互参数，走浏览器授权；成功后凭证落在 `~/.qoder-cn/.auth`（国际版是 `.qoder`，
+  本插件只认 CN 这一份）。
+- 登录过期或换账号，重跑一次 `qoderclicn login` 覆盖旧凭证即可。
+- CLI 自带升级：`qoderclicn update`，装坏了用 `qoderclicn rollback`。
+- `status` 里没有 `Username`、或 `--list-models` 拉不出模型，DSH 里的模型列表就一定为空——
+  先修 CLI 这一步，再查插件。
+
+### 第二步：装插件
 
 点侧边栏的 **插件 → 添加插件**，把 **`dsh-qoder-link`** 填进输入框，然后点「安装」。
 

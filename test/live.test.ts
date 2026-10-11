@@ -79,8 +79,8 @@ describe('live config', () => {
     apply(ctx as any, mounted as any)
     const adapter = recorded.adapter
 
-    // One route only: Qoder CN exposes no user-added models, so there is no
-    // second group to register.
+    // One route only: the subscription catalog is the model source this plugin
+    // serves, so there is no second group to register.
     expect(recorded.routes).toEqual([QODER_PROVIDER])
     expect(adapter.isModelDisabled('auto')).toBe(true)
     expect(adapter.contextWindowFor('auto')).toBe(200_000)

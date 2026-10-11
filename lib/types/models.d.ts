@@ -29,9 +29,8 @@ export declare class QoderModelCatalog {
     /**
      * Raw live entries; the stale snapshot when a refresh fails, else nothing.
      *
-     * Only the account's own (official) models come back: Qoder CN exposes no
-     * user-added models, so filtering here is what keeps the picker and the
-     * settings page from disagreeing about what the account has.
+     * Filtered to the subscription's official models here, so the picker and the
+     * settings page cannot disagree about what the account has.
      */
     liveModels(): Promise<readonly ModelInfo[]>;
     /** dsh catalog entries: the enabled live list, or the static fallback. */

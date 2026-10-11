@@ -67,6 +67,8 @@ export type { SessionRuntimeOptions } from './session.ts';
 export { QODER_MODELS, MODEL_ALIASES, resolveQoderModelId, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from './catalog.ts';
 export { QoderModelCatalog, priceFactorOf } from './models.ts';
 export { API_PREFIX, buildRows, handleApi } from './api.ts';
+export { SCRIPT_NAME, isSetupMode, readSetupStatus, setupScriptPath, startSetup, stopSetup } from './setup.ts';
+export type { SetupFailure, SetupMode, SetupStatus } from './setup.ts';
 export type { Live } from './live.ts';
 export { readLive, readLiveOptional } from './live.ts';
 export { liveConfig, resolveConfig } from './config.ts';

@@ -293,6 +293,11 @@ export class QoderAdapter extends LlmAdapter {
     return this.catalog.liveModels()
   }
 
+  /** Forget the cached catalog; the next read asks the CLI again. */
+  invalidateCatalog(): void {
+    this.catalog.invalidate()
+  }
+
   /** Whether the user switched one model off. */
   isModelDisabled(id: string): boolean {
     return this.disabledModels.has(id)

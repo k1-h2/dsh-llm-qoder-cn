@@ -8,9 +8,13 @@
  *
  * The model list cannot come from the config form: it is fetched live from the
  * Qoder CLI. So the page reads `GET <prefix>/models`, which joins that live
- * catalog with the user's stored choices, and posts each change back to the same
- * route. The host owns both the catalog and the write, so the page never
+ * catalog with the user's stored choices, while every change goes back through
+ * the host's own config form. The host owns the catalog, so the page never
  * derives state the adapter does not share.
+ *
+ * The page can also start the CLI helper shipped with this package
+ * (`POST <prefix>/setup`, then `GET <prefix>/setup` for its output): installing
+ * and signing into qoderclicn is a local action a browser cannot perform.
  *
  * Rendering from the schema-driven form alone would be wrong here: the useful
  * controls depend on rows that only exist at runtime.
@@ -64,6 +68,14 @@ window.__ModuleLoader__.load({
       hide: '收起',
       reset: '恢复默认',
       windowWarn: '窗口越大，DSH 的自动压缩触发得越晚。若对话经常超限，请选较小的窗口。',
+      cliGroup: 'Qoder CN CLI',
+      cliHint: '插件复用本机 qoderclicn 的登录态。这里可以直接跑随包附带的配置脚本：缺 CLI 就装，未登录就拉起浏览器登录。',
+      cliRun: '一键配置',
+      cliCheck: '仅体检',
+      cliRunning: '正在执行，输出持续刷新…',
+      cliStartFailed: '无法启动配置脚本',
+      cliExitOk: '配置脚本执行完成',
+      cliExitFail: '配置脚本未通过，退出码',
       advancedFields: {
         displayName: '分组名称',
         maxSessions: '并发会话数',
@@ -108,6 +120,14 @@ window.__ModuleLoader__.load({
       hide: 'Hide',
       reset: 'Reset',
       windowWarn: 'A larger window delays DSH\u2019s auto-compaction. Pick a smaller one if conversations overflow.',
+      cliGroup: 'Qoder CN CLI',
+      cliHint: 'The plugin reuses this machine\u2019s qoderclicn sign-in. Run the bundled helper from here: it installs the CLI when missing and opens the browser sign-in when signed out.',
+      cliRun: 'Configure',
+      cliCheck: 'Check only',
+      cliRunning: 'Running, output refreshes…',
+      cliStartFailed: 'Could not start the helper',
+      cliExitOk: 'Helper finished',
+      cliExitFail: 'Helper failed with exit code',
       advancedFields: {
         displayName: 'Group name',
         maxSessions: 'Concurrent sessions',
@@ -166,6 +186,7 @@ window.__ModuleLoader__.load({
       group: { display: 'flex', flexDirection: 'column', gap: '10px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))', borderRadius: '10px', padding: '14px 16px' },
       advLabel: { fontSize: '0.88em' },
       h3: { margin: 0, fontSize: '0.95em' },
+      log: { margin: '0', maxHeight: '240px', overflowY: 'auto', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))', background: 'var(--dsw-alias-bg-base, rgba(128,128,128,0.05))', fontFamily: 'ui-monospace, monospace', fontSize: '0.76em', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
     }
 
     /**
@@ -268,16 +289,17 @@ window.__ModuleLoader__.load({
       const describeSnapshot = useSyncExternalStore(describeSubscribe, describeRead)
       useEffect(() => { describeFace.ensure().catch(() => undefined) }, [describeFace])
 
-      const fetchModels = useCallback(async () => {
-        const payload = await api('/models')
+      const fetchModels = useCallback(async (fresh = false) => {
+        const payload = await api(`/models${fresh ? '?fresh=1' : ''}`)
         return Array.isArray(payload?.models) ? payload.models : []
       }, [])
 
-      const load = useCallback(async () => {
+      /** Read the list. `fresh` asks the host to drop its catalog cache first. */
+      const load = useCallback(async (fresh = false) => {
         setError(undefined)
         const mine = ++ticket.current
         try {
-          const rows = await fetchModels()
+          const rows = await fetchModels(fresh)
           if (mine !== ticket.current) return
           setModels(rows)
         } catch (err) {
@@ -415,6 +437,60 @@ window.__ModuleLoader__.load({
         )
       }, [models, write])
 
+      // ── CLI helper ────────────────────────────────────────────────────────
+      // The host runs the script, so the page only asks and then reads what it
+      // printed. `setup` stays undefined-shaped until the first answer arrives:
+      // a host older than this route simply never answers, and the panel is
+      // still renderable with both buttons inert-free.
+      const [setup, setSetup] = useState(undefined)
+      const [setupError, setSetupError] = useState(undefined)
+      const logRef = useRef(null)
+
+      const pollSetup = useCallback(async () => {
+        try {
+          setSetup(await api('/setup', { timeout: 10_000 }))
+        } catch {
+          /* no run to report, or a host without the route */
+        }
+      }, [])
+
+      const startCliSetup = useCallback(async (mode) => {
+        setSetupError(undefined)
+        try {
+          setSetup(await api('/setup', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+            timeout: 15_000,
+          }))
+        } catch (err) {
+          setSetupError(`${t('cliStartFailed')}：${String(err?.message ?? err)}`)
+        }
+      }, [t])
+
+      const setupRunning = setup?.running === true
+      const setupCode = setup !== undefined && setup.running === false ? setup.code : undefined
+      const setupLines = Array.isArray(setup?.lines) ? setup.lines : []
+
+      useEffect(() => { void pollSetup() }, [pollSetup])
+      useEffect(() => {
+        if (!setupRunning) return undefined
+        const timer = setInterval(() => { void pollSetup() }, 1200)
+        return () => clearInterval(timer)
+      }, [setupRunning, pollSetup])
+
+      // The catalog is read from the CLI, so a helper that just installed or
+      // signed into it changes what the list should show — and the host has
+      // already dropped its cached answer for that case.
+      useEffect(() => {
+        if (setupCode === 0) void load(true)
+      }, [setupCode, load])
+
+      useEffect(() => {
+        const node = logRef.current
+        if (node !== null) node.scrollTop = node.scrollHeight
+      }, [setupLines.length])
+
       const all = models ?? []
       const enabledTotal = all.filter(m => m.enabled).length
 
@@ -434,7 +510,7 @@ window.__ModuleLoader__.load({
             ? h('div', { style: css.note }, t('loading'))
             : h('div', null,
                 h('div', { style: css.err }, `${t('loadFailed')}：${error}`),
-                h('button', { style: { ...css.btn, marginTop: '8px' }, onClick: () => void load() }, t('retry')),
+                h('button', { style: { ...css.btn, marginTop: '8px' }, onClick: () => void load(true) }, t('retry')),
               ),
         )
       }
@@ -508,7 +584,7 @@ window.__ModuleLoader__.load({
         // `nowrap` keeps them together; the count takes the remaining space so
         // nothing wraps to a second line.
         h('div', { style: { ...css.bar, flexWrap: 'nowrap' } },
-          h('button', { style: css.btn, disabled: busy, onClick: () => void load() }, t('refresh')),
+          h('button', { style: css.btn, disabled: busy, onClick: () => void load(true) }, t('refresh')),
           h('button', {
             style: css.btn,
             disabled: busy || all.every(m => m.enabled),
@@ -529,6 +605,27 @@ window.__ModuleLoader__.load({
         all.length > 0 ? h('div', { style: css.note }, t('windowWarn')) : null,
         error !== undefined ? h('div', { style: css.err }, error) : null,
         status !== undefined && error === undefined ? h('div', { style: css.note }, status) : null,
+
+        h('div', { style: css.group },
+          h('h3', { style: css.h3 }, t('cliGroup')),
+          h('div', { style: css.note }, t('cliHint')),
+          h('div', { style: { ...css.bar, flexWrap: 'nowrap' } },
+            h('button', { style: css.btn, disabled: setupRunning, onClick: () => void startCliSetup('configure') }, t('cliRun')),
+            h('button', { style: css.btn, disabled: setupRunning, onClick: () => void startCliSetup('check') }, t('cliCheck')),
+            h('span', { style: css.count }, setupRunning
+              ? t('cliRunning')
+              : setupError !== undefined
+                ? setupError
+                : setupCode === 0
+                  ? t('cliExitOk')
+                  : setupCode === undefined || setupCode === null
+                    ? ''
+                    : `${t('cliExitFail')} ${setupCode}`),
+          ),
+          setupLines.length > 0
+            ? h('pre', { ref: logRef, style: css.log }, setupLines.join('\n'))
+            : null,
+        ),
 
         advanced,
       )

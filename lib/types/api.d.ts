@@ -3,17 +3,20 @@
  *
  * The page cannot read the model catalog from the config form: the catalog is
  * fetched live from the Qoder CLI, while the form only carries what the user
- * stored. So the host answers one read-only JSON route that joins the two:
+ * stored. So the host answers these JSON routes:
  *
  * - `GET <prefix>/models` — every model the account exposes, each with its
  *   enabled state, the window it will use, and the windows it may use.
+ * - `GET <prefix>/setup` — state of the CLI helper run, including what it printed.
+ * - `POST <prefix>/setup` — start that helper: `{"mode":"check"|"configure"}`.
  *
- * Writes deliberately do NOT come through here. The browser half already holds
- * a revision-fenced form for this plugin's config namespace
+ * Config writes deliberately do NOT come through here. The browser half already
+ * holds a revision-fenced form for this plugin's config namespace
  * (`ctx.configForms.get(ns)`), and routing every change through it means one
  * write path, one revision fence, and no second owner of the same document. A
  * host-side write would have to reach into the settings service and could race
- * the form.
+ * the form. The `/setup` pair is not a config write: it starts a bundled script
+ * and reports its output.
  *
  * @module dsh-qoder-link/api
  */

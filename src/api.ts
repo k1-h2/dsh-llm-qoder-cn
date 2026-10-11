@@ -3,17 +3,20 @@
  *
  * The page cannot read the model catalog from the config form: the catalog is
  * fetched live from the Qoder CLI, while the form only carries what the user
- * stored. So the host answers one read-only JSON route that joins the two:
+ * stored. So the host answers these JSON routes:
  *
  * - `GET <prefix>/models` — every model the account exposes, each with its
  *   enabled state, the window it will use, and the windows it may use.
+ * - `GET <prefix>/setup` — state of the CLI helper run, including what it printed.
+ * - `POST <prefix>/setup` — start that helper: `{"mode":"check"|"configure"}`.
  *
- * Writes deliberately do NOT come through here. The browser half already holds
- * a revision-fenced form for this plugin's config namespace
+ * Config writes deliberately do NOT come through here. The browser half already
+ * holds a revision-fenced form for this plugin's config namespace
  * (`ctx.configForms.get(ns)`), and routing every change through it means one
  * write path, one revision fence, and no second owner of the same document. A
  * host-side write would have to reach into the settings service and could race
- * the form.
+ * the form. The `/setup` pair is not a config write: it starts a bundled script
+ * and reports its output.
  *
  * @module dsh-qoder-link/api
  */
@@ -21,6 +24,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { QoderAdapter } from './adapter.ts'
 import { priceFactorOf } from './models.ts'
+import { isSetupMode, readSetupStatus, startSetup } from './setup.ts'
 
 /** Route prefix this plugin owns; the client resolves it relative to the page. */
 export const API_PREFIX = '/api/llm-qoder-cn'
@@ -104,6 +108,27 @@ export async function buildRows(adapter: QoderAdapter): Promise<ModelRow[]> {
 }
 
 /**
+ * Largest request body this route accepts. The only body in the API is a
+ * two-key JSON object, so anything bigger is either a bug or an attack.
+ */
+const MAX_BODY_BYTES = 1024
+
+/** Read and parse a small JSON request body. */
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const part of req) {
+    const chunk = Buffer.isBuffer(part) ? part : Buffer.from(String(part))
+    size += chunk.length
+    if (size > MAX_BODY_BYTES) throw new Error('请求体过大')
+    chunks.push(chunk)
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  if (text === '') throw new Error('缺少请求体')
+  return JSON.parse(text)
+}
+
+/**
  * Handle one request under {@link API_PREFIX}.
  *
  * @param req - the incoming request.
@@ -117,11 +142,46 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, adapt
     const method = req.method ?? 'GET'
 
     if (path === '/models' && method === 'GET') {
+      // `?fresh=1` is the page's refresh button. The cached list is precisely
+      // what a user wants to escape once the CLI's own state just changed.
+      if (url.searchParams.get('fresh') === '1') adapter.invalidateCatalog()
       send(res, 200, { models: await buildRows(adapter) })
       return
     }
 
-    send(res, method === 'GET' ? 404 : 405, { error: method === 'GET' ? 'not found' : '只支持读取' })
+    if (path === '/setup') {
+      if (method === 'GET') {
+        send(res, 200, readSetupStatus())
+        return
+      }
+      if (method === 'POST') {
+        let mode: unknown
+        try {
+          mode = (await readJson(req) as { mode?: unknown } | null)?.mode
+        } catch (error) {
+          send(res, 400, { error: `请求体无法解析：${error instanceof Error ? error.message : String(error)}` })
+          return
+        }
+        if (!isSetupMode(mode)) {
+          send(res, 400, { error: 'mode 只接受 check 或 configure' })
+          return
+        }
+        const result = startSetup(mode, code => {
+          // A run that installed or signed into the CLI changed what the catalog
+          // should hold, and an empty catalog is cached like any other answer.
+          if (code === 0) adapter.invalidateCatalog()
+        })
+        if (!result.started) {
+          const status = result.reason === 'busy' ? 409 : result.reason === 'unsupported' ? 501 : 500
+          send(res, status, { error: result.error })
+          return
+        }
+        send(res, 200, readSetupStatus())
+        return
+      }
+    }
+
+    send(res, method === 'GET' ? 404 : 405, { error: method === 'GET' ? 'not found' : '只支持读取，以及 POST /setup' })
   } catch (error) {
     send(res, 500, { error: error instanceof Error ? error.message : String(error) })
   }

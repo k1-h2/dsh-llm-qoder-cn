@@ -10,3 +10,9 @@
 
 # Generated declaration files are build output; keep them out of diffs noise.
 lib/** linguist-generated=true
+
+# cmd.exe cannot parse a batch file whose newlines are LF-only, so the setup
+# helper must come out of a checkout with CRLF intact — the blanket rule above
+# would otherwise rewrite it. Later rules win.
+*.bat text eol=crlf
+*.cmd text eol=crlf

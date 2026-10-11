@@ -24,27 +24,7 @@ v = zn ? { cliCommands: ["qoderclicn"], configDirName: ".qoder-cn" }
 
 ## 安装
 
-### 第一步：装好并登录 Qoder CN CLI
-
-插件不持有任何凭据，内层会话直接复用本机 CLI 的登录态（SDK 的 `qodercliAuth()`），所以 CLI
-必须**先装好、先登录**，插件才可能工作。
-
-```bash
-npm install -g @qodercn-ai/qoderclicn   # CLI 本体，官网 https://qoder.com/cli
-qoderclicn --version                    # 能打印版本号才算装上
-qoderclicn login                        # 拉起浏览器，用 Qoder CN 账号登录
-qoderclicn status                       # 列出 Username / User Type 即登录成功
-qoderclicn --list-models                # 列出订阅实际可用的模型
-```
-
-- `login` 没有非交互参数，走浏览器授权；成功后凭证落在 `~/.qoder-cn/.auth`（国际版是 `.qoder`，
-  本插件只认 CN 这一份）。
-- 登录过期或换账号，重跑一次 `qoderclicn login` 覆盖旧凭证即可。
-- CLI 自带升级：`qoderclicn update`，装坏了用 `qoderclicn rollback`。
-- `status` 里没有 `Username`、或 `--list-models` 拉不出模型，DSH 里的模型列表就一定为空——
-  先修 CLI 这一步，再查插件。
-
-### 第二步：装插件
+### 第一步：装插件
 
 点侧边栏的 **插件 → 添加插件**，把 **`dsh-qoder-link`** 填进输入框，然后点「安装」。
 
@@ -59,8 +39,36 @@ SDK 声明了安装脚本（下载它自己的 worker runtime），pnpm 默认�
 **「需要允许安装脚本」**——点「**允许这些脚本并重试**」就行。授权记在当前 profile 里，只问这
 一次；不授权也能用，SDK 会回退到 PATH 上的系统 `qoderclicn`。
 
-装完按界面提示**重启 DSH**（「已安装，下次启动后加载」）。重启后模型选择器出现 `Qoder CN`
-分组，设置里出现 **Qoder CN** 一项。
+装完按界面提示**重启 DSH**（「已安装，下次启动后加载」）。重启后设置里出现 **Qoder CN** 一项。
+
+### 第二步：装好并登录 Qoder CN CLI
+
+插件不持有任何凭据，内层会话直接复用本机 CLI 的登录态（SDK 的 `qodercliAuth()`），所以 CLI
+必须装好、登录，模型列表才有内容。
+
+**设置 → Qoder CN**，页面底部「Qoder CN CLI」分组点 **一键配置**：跑的就是随包发布的
+[`scripts/setup-qoderclicn.bat`](./scripts/setup-qoderclicn.bat)——缺 CLI 就装，未登录就拉起
+浏览器授权，输出实时打在页面上，跑完自动刷新模型列表。**仅体检**只查不改。这一步只支持
+Windows，因为脚本是 `.bat`；脚本自己的输出是英文——批处理里放中文时，`cmd.exe` 在没有控制台
+被调用（正是页面这种调用方式）会算错文件位置，把半行当命令跑，详见 `NOTICE`。
+
+不想点按钮，就自己按顺序执行——那个脚本做的正是这几步：
+
+```bash
+npm install -g @qodercn-ai/qoderclicn   # CLI 本体，官网 https://qoder.com/cli
+qoderclicn --version                    # 能打印版本号才算装上
+qoderclicn login                        # 拉起浏览器，用 Qoder CN 账号登录
+qoderclicn status                       # 列出 Username / User Type 即登录成功
+qoderclicn --list-models                # 列出订阅实际可用的模型
+```
+
+- 也可以直接双击 `scripts/setup-qoderclicn.bat`：一次做完上面全部，结尾停住等你看输出。
+- `login` 没有非交互参数，走浏览器授权；成功后凭证落在 `~/.qoder-cn/.auth`（国际版是 `.qoder`，
+  本插件只认 CN 这一份）。
+- 登录过期或换账号，重跑一次 `qoderclicn login` 覆盖旧凭证即可。
+- CLI 自带升级：`qoderclicn update`，装坏了用 `qoderclicn rollback`。
+- `status` 里没有 `Username`、或 `--list-models` 拉不出模型，DSH 里的模型列表就一定为空——
+  先修这一步，再查插件。
 
 ## 设置页
 
@@ -83,6 +91,10 @@ SDK 声明了安装脚本（下载它自己的 worker runtime），pnpm 默认�
 **高级设置**（可折叠，默认收起）收纳其余 10 个标量参数：分组名称、并发会话数、列表缓存、默认
 思考档位、输出上限、三个超时（工具结果 / 模型列表 / 中断宽限）、旁路轮次、模型别名。每项带中文
 说明，改过的项旁边会出现「恢复默认」。
+
+**Qoder CN CLI** 分组在页面底部，管第二步那件事：「一键配置」「仅体检」两个按钮，加一块实时
+打印脚本输出的区域，跑完顺手刷新模型列表。浏览器起不了本地进程，所以按钮走的是宿主侧的
+`POST /api/llm-qoder-cn/setup`，由插件去跑随包发布的脚本。
 
 **只服务官方模型。** Qoder CN 也提供「账号自己添加的模型」（自带 API Key 的 BYOK 路线，上游另用
 一条 `qoder-byok` 路由承载），但 DSH 这边用不上——插件只走订阅自己的目录，因此只注册一个 provider

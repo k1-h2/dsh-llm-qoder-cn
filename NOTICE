@@ -55,6 +55,17 @@ MIT 不要求衍生作品沿用同一许可（无 copyleft 条款），但本项
    （表现为「点了没反应」）。本仓库改为全部按需读取（`src/live.ts` 的 `Live<T>` 与
    `liveConfig()`），只对决定选择器分组名的 `displayName` 监听 `loader/volatile-update` 就地重发。
 
+9. **一键配置 CLI（仅 Windows）**：随包发布 `scripts/setup-qoderclicn.bat`——检查 node/npm、
+   缺就 `npm install -g @qodercn-ai/qoderclicn`、未登录就 `qoderclicn login`、最后校验版本 /
+   登录态 / 凭证目录 / 模型数量。设置页底部的分组通过 `POST /api/llm-qoder-cn/setup` 让宿主
+   进程代跑它并实时回传输出（浏览器无法启动本地进程），`--check` 模式只读不改。这条路径上
+   没有任何用户可控字符串：mode 是两个键的白名单，各自映射到一个字面 flag，脚本路径来自包
+   自身布局；同一时刻只允许一个运行，插件卸载时杀掉未结束的子进程。批次文件有两个硬约束：
+   必须 CRLF（`cmd.exe` 解析不了 LF-only，故 `.gitattributes` 为 `*.bat` 单独设了
+   `eol=crlf`），且必须纯 ASCII——实测在**没有控制台**的方式下调用（`windowsHide` + 管道，
+   正是插件的调用方式）时，`cmd.exe` 会在含多字节字符的行上算错文件位置，把半行当命令执行；
+   同一份文件在真实控制台里则正常。上游与本仓库此前都不涉及本地进程执行。
+
 ## 上游的原始文件
 
 上游 `LICENSE` 的逐字副本保留在 [`LICENSE.original`](./LICENSE.original)，以满足

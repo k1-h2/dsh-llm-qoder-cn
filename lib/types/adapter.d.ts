@@ -148,6 +148,8 @@ export declare class QoderAdapter extends LlmAdapter {
      * @returns live catalog entries in upstream order.
      */
     describeCatalog(): Promise<Awaited<ReturnType<QoderModelCatalog['liveModels']>>>;
+    /** Forget the cached catalog; the next read asks the CLI again. */
+    invalidateCatalog(): void;
     /** Whether the user switched one model off. */
     isModelDisabled(id: string): boolean;
     /** The stored disabled-model set, as a list for rewriting the field. */

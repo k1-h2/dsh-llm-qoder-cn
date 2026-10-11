@@ -28,6 +28,7 @@ import type { ServerResponse, IncomingMessage } from 'node:http'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { QoderAdapter, QODER_PROVIDER } from './adapter.ts'
 import { API_PREFIX, handleApi } from './api.ts'
+import { stopSetup } from './setup.ts'
 import type { LiveConfig, ParsedConfig } from './config.ts'
 import { Config as ConfigSchema, liveConfig } from './config.ts'
 
@@ -76,6 +77,8 @@ export type { SessionRuntimeOptions } from './session.ts'
 export { QODER_MODELS, MODEL_ALIASES, resolveQoderModelId, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from './catalog.ts'
 export { QoderModelCatalog, priceFactorOf } from './models.ts'
 export { API_PREFIX, buildRows, handleApi } from './api.ts'
+export { SCRIPT_NAME, isSetupMode, readSetupStatus, setupScriptPath, startSetup, stopSetup } from './setup.ts'
+export type { SetupFailure, SetupMode, SetupStatus } from './setup.ts'
 export type { Live } from './live.ts'
 export { readLive, readLiveOptional } from './live.ts'
 export { liveConfig, resolveConfig } from './config.ts'
@@ -213,6 +216,10 @@ export function apply(ctx: Context, config: ParsedConfig): void {
   // registerAdapter's disposer only withdraws the routes; the warm qodercli
   // subprocesses are owned by the adapter and must close with the plugin.
   ctx.effect(() => () => adapter.close(), 'llm-qoder-cn.sessions')
+
+  // A CLI helper still running when this plugin is reloaded or removed would
+  // otherwise keep writing into a page that can no longer read it.
+  ctx.effect(() => () => stopSetup(), 'llm-qoder-cn.setup')
 
   // The settings page's data source: the live catalog joined with the user's
   // on/off and window choices. Served from its own route because the catalog

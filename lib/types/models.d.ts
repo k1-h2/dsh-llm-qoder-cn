@@ -33,6 +33,15 @@ export declare class QoderModelCatalog {
      * settings page cannot disagree about what the account has.
      */
     liveModels(): Promise<readonly ModelInfo[]>;
+    /**
+     * Drop the cached catalog so the next read goes back to the CLI.
+     *
+     * What the CLI answers depends on state this plugin does not own — whether it
+     * is installed at all, and which account is signed in — and an empty answer is
+     * cached like any other. So after the setup helper has run, the page's next
+     * read must not be served from a snapshot taken before that login existed.
+     */
+    invalidate(): void;
     /** dsh catalog entries: the enabled live list, or the static fallback. */
     models(): Promise<readonly QoderCatalogModel[]>;
     private fetch;

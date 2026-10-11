@@ -15,11 +15,6 @@
  * @module dsh-qoder-link/config
  */
 import z from '@deepseek-ai/schemastery';
-/** How to treat the account's custom (user-added) models on the main route. */
-export declare const BYOK_ROUTES: readonly ["separate", "inline"];
-export type ByokRoute = (typeof BYOK_ROUTES)[number];
-/** Human labels for {@link BYOK_ROUTES}. */
-export declare const BYOK_ROUTE_NAMES: Readonly<Record<ByokRoute, string>>;
 /**
  * The plugin configuration as authored in a profile patch.
  *
@@ -58,19 +53,9 @@ export interface Config {
      */
     modelAliases?: Record<string, string>;
     /**
-     * Whether the account's custom models get their own provider route.
-     * `separate` keeps them in a second picker group; `inline` merges them in.
-     */
-    byokRoute?: ByokRoute;
-    /**
      * Display name of the primary provider group in the model picker.
      */
     displayName?: string;
-    /**
-     * Display name of the secondary group carrying the account's own models.
-     * Only used when `byokRoute` is `separate`.
-     */
-    byokDisplayName?: string;
     /**
      * How many warm inner Qoder CLI sessions to keep alive at once. One warm
      * session exists per DSH session id; beyond this cap the least recently used
@@ -140,9 +125,7 @@ export interface Config {
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     disabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     modelContextWindows: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
-    byokRoute: z<"separate" | "inline", "separate" | "inline", "volatile-defined">;
     displayName: z<string, string, "volatile-defined">;
-    byokDisplayName: z<string, string, "volatile-defined">;
     maxSessions: z<number, number, "volatile-defined">;
     modelCacheTtlSeconds: z<number, number, "volatile-defined">;
     modelAliases: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
@@ -155,9 +138,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, Schemastery.ObjectT<NoInfer<{
     disabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     modelContextWindows: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
-    byokRoute: z<"separate" | "inline", "separate" | "inline", "volatile-defined">;
     displayName: z<string, string, "volatile-defined">;
-    byokDisplayName: z<string, string, "volatile-defined">;
     maxSessions: z<number, number, "volatile-defined">;
     modelCacheTtlSeconds: z<number, number, "volatile-defined">;
     modelAliases: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
@@ -171,8 +152,6 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 /** Fully-resolved options with every default applied. */
 export interface ResolvedConfig {
     displayName: string;
-    byokDisplayName: string;
-    byokRoute: ByokRoute;
     maxSessions: number;
     modelCacheTtlMs: number;
     defaultMaxTokens: number;

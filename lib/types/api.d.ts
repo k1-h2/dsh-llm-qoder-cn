@@ -33,8 +33,6 @@ interface ModelRow {
     enabled: boolean;
     /** Whether the model accepts image input. */
     vision: boolean;
-    /** Where the model came from; `user`/`custom` mark account-added models. */
-    source?: string;
     /** Window the requests will actually use, in tokens. */
     contextWindow: number;
     /** Windows the user may choose from, ascending. Always contains the current one. */

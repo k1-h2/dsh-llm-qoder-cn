@@ -37,8 +37,6 @@ interface ModelRow {
   enabled: boolean
   /** Whether the model accepts image input. */
   vision: boolean
-  /** Where the model came from; `user`/`custom` mark account-added models. */
-  source?: string
   /** Window the requests will actually use, in tokens. */
   contextWindow: number
   /** Windows the user may choose from, ascending. Always contains the current one. */
@@ -95,7 +93,6 @@ export async function buildRows(adapter: QoderAdapter): Promise<ModelRow[]> {
       ...entry.description.length > 0 ? { description: entry.description } : {},
       enabled: !adapter.isModelDisabled(entry.value),
       vision: entry.isVl === true,
-      ...entry.source === undefined ? {} : { source: entry.source },
       contextWindow: override ?? upstream,
       contextWindows: [...choices].sort((a, b) => a - b),
       defaultContextWindow: upstream,

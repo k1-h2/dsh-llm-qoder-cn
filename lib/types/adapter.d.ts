@@ -46,8 +46,6 @@ export interface QoderAdapterOptions {
     coldMaxTurns?: Live<number>;
     /** How long one CLI catalog fetch may take before the static fallback. */
     catalogFetchTimeoutMs?: Live<number>;
-    /** Whether custom models keep their own route or merge into the main one. */
-    byokRoute?: Live<'separate' | 'inline'>;
     /**
      * Per-model context window in tokens, keyed by Qoder model id. A model with
      * no entry uses the window upstream declares for it.
@@ -63,13 +61,9 @@ export interface QoderAdapterOptions {
     defaultReasoningEffort?: Live<string | undefined>;
     /** Display name of the primary provider group. */
     displayName?: Live<string>;
-    /** Display name of the group holding the account's custom models. */
-    byokDisplayName?: Live<string>;
 }
-/** The primary provider route (the qoder account's built-in models). */
+/** The primary provider route (the qoder account's own models). */
 export declare const QODER_PROVIDER = "qoder-cn";
-/** Secondary route advertising only the account's custom models. */
-export declare const QODER_BYOK_PROVIDER = "qoder-cn-byok";
 /**
  * Decide the context window to report for one live model.
  *
@@ -123,14 +117,12 @@ export declare class QoderAdapter extends LlmAdapter {
      */
     private disabledCache;
     constructor(options?: QoderAdapterOptions);
-    private get byokRoute();
     private get defaultMaxTokens();
     private get modelContextWindows();
     private get disabledModels();
     private get modelAliases();
     private get defaultReasoningEffort();
     private get displayName();
-    private get byokDisplayName();
     providerInfo(provider: string): LlmProviderInfo;
     /**
      * Whether one catalog entry is enabled for the picker.

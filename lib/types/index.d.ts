@@ -1,5 +1,5 @@
 /**
- * Register {@link QoderAdapter} for the `qoder-cn` and `qoder-cn-byok` provider
+ * Register {@link QoderAdapter} for the `qoder-cn` provider
  * routes on `ctx.llm`, backed by the official Qoder CN Agent SDK
  * (`@qodercn-ai/qodercn-agent-sdk`).
  *
@@ -15,9 +15,9 @@
  * Every config field is volatile, and DSH commits a volatile-only edit into the
  * running plugin's config cells instead of restarting it — `apply()` is not
  * called again. The adapter is therefore handed {@link liveConfig} thunks and
- * reads each value where it uses it; the only things captured at mount are the
- * two registrations (`providersFor` / `directoryFor`), which are republished
- * through their `replace` handles when a field that decides a shape changes.
+ * reads each value where it uses it; the only thing captured at mount is the
+ * picker-directory registration (`directoryFor`), which is republished through
+ * its `replace` handle when the display name changes.
  * See `src/live.ts` for the mechanism.
  *
  * @module dsh-qoder-link
@@ -55,12 +55,12 @@ declare module '@deepseek-ai/cordis' {
          * `src/live.ts`. Declared here because it is an internal loader event that
          * the framework's own `Events` interface does not carry.
          *
-         * @param paths - one path array per committed field, e.g. `[['byokRoute']]`.
+         * @param paths - one path array per committed field, e.g. `[['displayName']]`.
          */
         'loader/volatile-update'(paths: readonly (readonly string[])[]): void;
     }
 }
-export { QoderAdapter, QODER_PROVIDER, QODER_BYOK_PROVIDER, pickContextWindow } from './adapter.ts';
+export { QoderAdapter, QODER_PROVIDER, pickContextWindow } from './adapter.ts';
 export type { ImageRequestReader, QoderAdapterOptions } from './adapter.ts';
 export { QoderSession, QoderSessionManager } from './session.ts';
 export type { SessionRuntimeOptions } from './session.ts';
@@ -69,8 +69,8 @@ export { QoderModelCatalog, priceFactorOf } from './models.ts';
 export { API_PREFIX, buildRows, handleApi } from './api.ts';
 export type { Live } from './live.ts';
 export { readLive, readLiveOptional } from './live.ts';
-export { BYOK_ROUTES, BYOK_ROUTE_NAMES, liveConfig, resolveConfig } from './config.ts';
-export type { Config as ConfigShape, LiveConfig, ParsedConfig, ResolvedConfig, ByokRoute, } from './config.ts';
+export { liveConfig, resolveConfig } from './config.ts';
+export type { Config as ConfigShape, LiveConfig, ParsedConfig, ResolvedConfig, } from './config.ts';
 /** Cordis plugin name; must match the `id` used by `cordis.patch.yml`. */
 export declare const name = "llm-qoder-cn";
 /** The LLM registry must exist before an adapter can be registered on it. */
@@ -86,9 +86,7 @@ export declare const inject: string[];
 export declare const Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
     disabledModels: import("@deepseek-ai/schemastery").default<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     modelContextWindows: import("@deepseek-ai/schemastery").default<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
-    byokRoute: import("@deepseek-ai/schemastery").default<"separate" | "inline", "separate" | "inline", "volatile-defined">;
     displayName: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
-    byokDisplayName: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
     maxSessions: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     modelCacheTtlSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     modelAliases: import("@deepseek-ai/schemastery").default<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;
@@ -101,9 +99,7 @@ export declare const Config: import("@deepseek-ai/schemastery").default<Schemast
 }>>, Schemastery.ObjectT<NoInfer<{
     disabledModels: import("@deepseek-ai/schemastery").default<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     modelContextWindows: import("@deepseek-ai/schemastery").default<NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<number, string>>, "volatile-defined">;
-    byokRoute: import("@deepseek-ai/schemastery").default<"separate" | "inline", "separate" | "inline", "volatile-defined">;
     displayName: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
-    byokDisplayName: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
     maxSessions: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     modelCacheTtlSeconds: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
     modelAliases: import("@deepseek-ai/schemastery").default<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile-defined">;

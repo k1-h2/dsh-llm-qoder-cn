@@ -64,8 +64,9 @@ SDK 声明了安装脚本（下载它自己的 worker runtime），pnpm 默认�
 思考档位、输出上限、三个超时（工具结果 / 模型列表 / 中断宽限）、旁路轮次、模型别名。每项带中文
 说明，改过的项旁边会出现「恢复默认」。
 
-`byokRoute` 与 `byokDisplayName` 不在页面上：它们只影响账号**自己添加的**自定义模型要不要单独
-分组，没有这类模型的账号下改了也看不出差别。两个字段仍在 Config schema 里，可用 YAML 配置。
+**只服务官方模型。** Qoder CN 没有「账号自己添加的模型」这回事，所以插件只注册一个 provider
+路由 `qoder-cn`，模型列表就是账号目录里官方的那一份——上游若把某个条目标记为 `user`/`custom`，
+这里会直接丢弃。模型选择器里因此只有一个 `Qoder CN` 分组，没有第二个自定义分组。
 
 ## 用 YAML 配置
 
@@ -131,9 +132,8 @@ if (!pending.length && !force) return          // 不重启，不重新 apply
   `Volatile` 取值；`resolveConfig()` 在它之上实现，两者语义不会漂移。
 - 适配器、会话池、模型目录一律按需读。`updateVolatile()` 只把新值写进**同一个**引用，所以
   thunk 天然看到新值——不用重启，也不丢 warm 会话。
-- 只有 `byokRoute` / `displayName` / `byokDisplayName` 决定注册形状（route 存不存在、分组叫
-  什么），无法惰性化；插件监听 `loader/volatile-update`，只在这三个字段变化时用 `replace()`
-  就地重发。
+- 只有 `displayName` 会被复制进选择器的分组目录，无法惰性化；插件监听
+  `loader/volatile-update`，只在这个字段变化时用 `replace()` 就地重发。
 
 [`test/live.test.ts`](./test/live.test.ts) 精确复现 loader 的就地提交并断言适配器**在不重新
 `apply()` 的情况下**跟着变；用 0.5.0 的构建跑同一段代码会失败。

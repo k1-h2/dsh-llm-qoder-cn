@@ -18,16 +18,6 @@
 import { isVolatile } from '@deepseek-ai/cosmokit'
 import z from '@deepseek-ai/schemastery'
 
-/** How to treat the account's custom (user-added) models on the main route. */
-export const BYOK_ROUTES = ['separate', 'inline'] as const
-export type ByokRoute = (typeof BYOK_ROUTES)[number]
-
-/** Human labels for {@link BYOK_ROUTES}. */
-export const BYOK_ROUTE_NAMES: Readonly<Record<ByokRoute, string>> = {
-  separate: 'Separate route (qoder-cn-byok)',
-  inline: 'Merge into the main route',
-}
-
 /**
  * The plugin configuration as authored in a profile patch.
  *
@@ -69,19 +59,9 @@ export interface Config {
 
   // ── Advanced: sensible defaults, rarely changed ─────────────────────────
   /**
-   * Whether the account's custom models get their own provider route.
-   * `separate` keeps them in a second picker group; `inline` merges them in.
-   */
-  byokRoute?: ByokRoute
-  /**
    * Display name of the primary provider group in the model picker.
    */
   displayName?: string
-  /**
-   * Display name of the secondary group carrying the account's own models.
-   * Only used when `byokRoute` is `separate`.
-   */
-  byokDisplayName?: string
   /**
    * How many warm inner Qoder CLI sessions to keep alive at once. One warm
    * session exists per DSH session id; beyond this cap the least recently used
@@ -158,9 +138,7 @@ export const Config = z.object({
   modelContextWindows: z.dict(z.number()).default({}).description('按模型指定上下文窗口（token 数）。未指定的模型使用上游声明的窗口。').volatile(),
 
   // ── 高级：一般无需改动 ─────────────────────────────────────────────────
-  byokRoute: z.union(BYOK_ROUTES).default('separate').description('账号自定义模型的展示方式：独立分组，或并入主分组。').volatile(),
   displayName: z.string().default('Qoder CN').description('模型选择器里主分组的名称。同时使用多个 Qoder 账号时可区分。').volatile(),
-  byokDisplayName: z.string().default('Qoder CN 自定义').description('自定义模型分组的名称，仅在「独立分组」时使用。').volatile(),
   maxSessions: z.number().step(1).min(1).max(64).default(8).description('同时保持的内层会话数上限，超出后按最久未使用关闭。每个会话是一个子进程。').volatile(),
   modelCacheTtlSeconds: z.number().step(1).min(10).max(86_400).default(300).description('模型列表缓存时长（秒）。调小可更快看到账号侧变化。').volatile(),
   modelAliases: z.dict(z.string()).default({}).description('额外的模型别名映射：DSH 侧名称 → Qoder 模型 ID。内置 deepseek-v4-* 别名仍然生效。').volatile(),
@@ -175,8 +153,6 @@ export const Config = z.object({
 /** Fully-resolved options with every default applied. */
 export interface ResolvedConfig {
   displayName: string
-  byokDisplayName: string
-  byokRoute: ByokRoute
   maxSessions: number
   modelCacheTtlMs: number
   defaultMaxTokens: number
@@ -237,8 +213,6 @@ export function liveConfig(config: ParsedConfig | undefined): LiveConfig {
 
   return {
     displayName: () => nonEmpty(field('displayName'), 'Qoder CN'),
-    byokDisplayName: () => nonEmpty(field('byokDisplayName'), 'Qoder CN 自定义'),
-    byokRoute: () => field('byokRoute') === 'inline' ? 'inline' : 'separate',
     maxSessions: () => positive(field('maxSessions'), 8),
     modelCacheTtlMs: () => positive(field('modelCacheTtlSeconds'), 300) * 1_000,
     defaultMaxTokens: () => positive(field('defaultMaxTokens'), 32_000),
@@ -272,8 +246,6 @@ export function resolveConfig(config: ParsedConfig | undefined): ResolvedConfig 
   const live = liveConfig(config)
   return {
     displayName: live.displayName(),
-    byokDisplayName: live.byokDisplayName(),
-    byokRoute: live.byokRoute(),
     maxSessions: live.maxSessions(),
     modelCacheTtlMs: live.modelCacheTtlMs(),
     defaultMaxTokens: live.defaultMaxTokens(),

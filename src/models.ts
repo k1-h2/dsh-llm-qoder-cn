@@ -57,7 +57,13 @@ export class QoderModelCatalog {
     private readonly fetchTimeoutMs: Live<number> = DEFAULT_FETCH_TIMEOUT_MS,
   ) {}
 
-  /** Raw live entries; the stale snapshot when a refresh fails, else nothing. */
+  /**
+   * Raw live entries; the stale snapshot when a refresh fails, else nothing.
+   *
+   * Only the account's own (official) models come back: Qoder CN exposes no
+   * user-added models, so filtering here is what keeps the picker and the
+   * settings page from disagreeing about what the account has.
+   */
   async liveModels(): Promise<readonly ModelInfo[]> {
     const ttlMs = readLive(this.ttlMs, DEFAULT_MODEL_CACHE_TTL_MS)
     const fresh = (snapshot: CatalogSnapshot | undefined): boolean =>
@@ -66,7 +72,7 @@ export class QoderModelCatalog {
     const cached = this.cached ?? sharedSnapshot
     if (fresh(cached) && cached !== undefined) {
       this.cached = cached
-      return cached.models
+      return officialOnly(cached.models)
     }
     this.inflight ??= this.fetch().finally(() => { this.inflight = undefined })
     try {
@@ -74,11 +80,11 @@ export class QoderModelCatalog {
       const snapshot: CatalogSnapshot = { at: Date.now(), models }
       this.cached = snapshot
       sharedSnapshot = snapshot
-      return models
+      return officialOnly(models)
     } catch {
       // A failed refresh keeps serving the last good list rather than dropping
       // to the static fallback, which would hide the account's real models.
-      return (this.cached ?? sharedSnapshot)?.models ?? []
+      return officialOnly((this.cached ?? sharedSnapshot)?.models ?? [])
     }
   }
 
@@ -90,7 +96,6 @@ export class QoderModelCatalog {
       id: model.value,
       name: model.displayName.length > 0 ? model.displayName : model.value,
       ...model.description.length > 0 ? { description: model.description } : {},
-      ...model.source === undefined ? {} : { source: model.source },
       // Carry only a verified affirmative: a false or absent flag stays off the
       // entry, so a non-VL live model and the static fallback look identical.
       ...model.isVl === true ? { isVl: true } : {},
@@ -107,6 +112,21 @@ export class QoderModelCatalog {
       await q.close().catch(() => undefined)
     }
   }
+}
+
+/**
+ * Keep only the account's official models.
+ *
+ * Qoder CN exposes no user-added models — the account's catalog *is* the
+ * official one — so an entry upstream marks `user`/`custom` is not something
+ * this plugin serves. Dropping it here means the picker, the settings page and
+ * the request path all agree on one list.
+ *
+ * @param models - entries as the CLI reported them.
+ * @returns the same list without account-added entries.
+ */
+function officialOnly(models: readonly ModelInfo[]): readonly ModelInfo[] {
+  return models.filter(model => model.source !== 'user' && model.source !== 'custom')
 }
 
 /**

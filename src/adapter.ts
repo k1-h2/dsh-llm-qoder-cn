@@ -60,8 +60,6 @@ export interface QoderAdapterOptions {
   coldMaxTurns?: Live<number>
   /** How long one CLI catalog fetch may take before the static fallback. */
   catalogFetchTimeoutMs?: Live<number>
-  /** Whether custom models keep their own route or merge into the main one. */
-  byokRoute?: Live<'separate' | 'inline'>
   /**
    * Per-model context window in tokens, keyed by Qoder model id. A model with
    * no entry uses the window upstream declares for it.
@@ -77,8 +75,6 @@ export interface QoderAdapterOptions {
   defaultReasoningEffort?: Live<string | undefined>
   /** Display name of the primary provider group. */
   displayName?: Live<string>
-  /** Display name of the group holding the account's custom models. */
-  byokDisplayName?: Live<string>
 }
 
 /** Shared empty values, so an unset list or map allocates nothing per read. */
@@ -86,10 +82,8 @@ const NO_MODELS: readonly string[] = []
 const NO_WINDOWS: Readonly<Record<string, number>> = {}
 const NO_ALIASES: Readonly<Record<string, string>> = {}
 
-/** The primary provider route (the qoder account's built-in models). */
+/** The primary provider route (the qoder account's own models). */
 export const QODER_PROVIDER = 'qoder-cn'
-/** Secondary route advertising only the account's custom models. */
-export const QODER_BYOK_PROVIDER = 'qoder-cn-byok'
 
 /**
  * Decide the context window to report for one live model.
@@ -224,10 +218,6 @@ export class QoderAdapter extends LlmAdapter {
     this.readImage = options.readImage
   }
 
-  private get byokRoute(): 'separate' | 'inline' {
-    return readLive(this.options.byokRoute, 'separate')
-  }
-
   private get defaultMaxTokens(): number {
     return readLive(this.options.defaultMaxTokens, DEFAULT_MAX_TOKENS)
   }
@@ -257,15 +247,8 @@ export class QoderAdapter extends LlmAdapter {
     return readLive(this.options.displayName, 'Qoder CN')
   }
 
-  private get byokDisplayName(): string {
-    return readLive(this.options.byokDisplayName, 'Qoder CN 自定义')
-  }
-
   override providerInfo(provider: string): LlmProviderInfo {
-    return {
-      id: provider,
-      name: provider === QODER_BYOK_PROVIDER ? this.byokDisplayName : this.displayName,
-    }
+    return { id: provider, name: this.displayName }
   }
 
   /**
@@ -331,20 +314,10 @@ export class QoderAdapter extends LlmAdapter {
   }
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    // One route, one list: the account's official models as the CLI reports
+    // them, minus whatever the user switched off.
     const cliModels = await this.catalog.models()
-    if (provider === QODER_BYOK_PROVIDER) {
-      // Only the account's custom models, which have their own route.
-      return cliModels
-        .filter(entry => entry.source === 'user' || entry.source === 'custom')
-        .filter(entry => this.isVisible(entry.id))
-        .map(entry => modelInfo(provider, entry))
-    }
-    // The built-in route lists the qoder account's own models. When the
-    // deployment asked for a single group (`byokRoute: inline`), the account's
-    // custom models are folded in here instead of getting their own route.
     return cliModels
-      .filter(entry => this.byokRoute === 'inline'
-        || (entry.source !== 'user' && entry.source !== 'custom'))
       .filter(entry => this.isVisible(entry.id))
       .map(entry => modelInfo(provider, entry))
   }

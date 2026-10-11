@@ -25,9 +25,11 @@ MIT 不要求衍生作品沿用同一许可（无 copyleft 条款），但本项
    本项目改用官方 **CN** 包 `@qodercn-ai/qodercn-agent-sdk`（`brand: cn`、
    `cliCommands: qoderclicn/qodercn`、配置目录 `.qoder-cn`、`QODERCN_*`）。
    两个包的 `dist/*.d.ts` 经比对逐字节相同，故 API 层面为直接替换。
-2. **独立 provider id**：`qoder-cn` / `qoder-cn-byok`（上游为 `qoder` / `qoder-byok`），
-   以便与上游插件在同一 profile 中共存而不冲突。
-3. **可配置设置面**：新增 `src/config.ts`，声明 14 个带中文说明的配置项。设置页由本插件
+2. **单一 provider id**：只注册 `qoder-cn`（上游为 `qoder`，另有 `qoder-byok` 承载账号自定义
+   模型）。Qoder CN 并不提供「账号自己添加的模型」，因此本项目不注册第二条路由，并在目录层
+   丢弃上游标记为 `user`/`custom` 的条目——模型选择器里只有一个分组。id 与上游不同，两者可在
+   同一 profile 中共存而不冲突。
+3. **可配置设置面**：新增 `src/config.ts`，声明 12 个带中文说明的配置项。设置页由本插件
    自带的 `client.js` 注册为**独立顶层导航项**（`settings.section`）——DSH 的自动配置页渲染在
    「内置插件」分区内部，要独立入口就得自带浏览器半侧。两个前提缺一不可：每个字段必须
    `.volatile()`（`volatileForm` 只保留 volatile 节点，否则整个命名空间不会下发到客户端），
@@ -51,8 +53,7 @@ MIT 不要求衍生作品沿用同一许可（无 copyleft 条款），但本项
    `_commitVolatile`），`apply()` 不会再被调用。上游和本仓库 0.6.0 之前都在挂载时把配置抄进
    自己的字段，于是设置页写成功、`cordis.patch.yml` 落盘也正确，插件却一直按挂载时的值作答
    （表现为「点了没反应」）。本仓库改为全部按需读取（`src/live.ts` 的 `Live<T>` 与
-   `liveConfig()`），只对决定注册形状的 `byokRoute` 与两个 `displayName` 监听
-   `loader/volatile-update` 就地重发。
+   `liveConfig()`），只对决定选择器分组名的 `displayName` 监听 `loader/volatile-update` 就地重发。
 
 ## 上游的原始文件
 

@@ -16,7 +16,7 @@
 import { updateVolatile } from '@deepseek-ai/cosmokit'
 import { describe, expect, it } from 'vitest'
 import {
-  Config, QODER_BYOK_PROVIDER, QODER_PROVIDER, apply, liveConfig, resolveConfig,
+  Config, QODER_PROVIDER, apply, liveConfig, resolveConfig,
 } from '../src/index.ts'
 
 /**
@@ -74,13 +74,14 @@ describe('live config', () => {
       modelContextWindows: { auto: 200_000 },
       defaultMaxTokens: 32_000,
       displayName: 'Qoder CN',
-      byokRoute: 'separate',
     })
     const { ctx, recorded } = stubContext()
     apply(ctx as any, mounted as any)
     const adapter = recorded.adapter
 
-    expect(recorded.routes).toEqual([QODER_PROVIDER, QODER_BYOK_PROVIDER])
+    // One route only: Qoder CN exposes no user-added models, so there is no
+    // second group to register.
+    expect(recorded.routes).toEqual([QODER_PROVIDER])
     expect(adapter.isModelDisabled('auto')).toBe(true)
     expect(adapter.contextWindowFor('auto')).toBe(200_000)
 
@@ -90,13 +91,11 @@ describe('live config', () => {
       modelContextWindows: { auto: 200_000, qfmodel: 1_000_000 },
       defaultMaxTokens: 64_000,
       displayName: 'Qoder 工作号',
-      byokRoute: 'inline',
     })
     updateVolatile(mounted.disabledModels, edited.disabledModels)
     updateVolatile(mounted.modelContextWindows, edited.modelContextWindows)
     updateVolatile(mounted.defaultMaxTokens, edited.defaultMaxTokens)
     updateVolatile(mounted.displayName, edited.displayName)
-    updateVolatile(mounted.byokRoute, edited.byokRoute)
 
     expect(adapter.disabledModelIds()).toEqual([])
     expect(adapter.isModelDisabled('auto')).toBe(false)
@@ -105,19 +104,20 @@ describe('live config', () => {
     expect(liveConfig(mounted).defaultMaxTokens()).toBe(64_000)
   })
 
-  it('republishes the routes and labels only when a structural field moves', () => {
-    const mounted = parse({ byokRoute: 'separate', displayName: 'Qoder CN' })
+  it('republishes the picker label only when the display name moves', () => {
+    const mounted = parse({ displayName: 'Qoder CN' })
     const { ctx, recorded } = stubContext()
     apply(ctx as any, mounted as any)
 
-    const edited = parse({ byokRoute: 'inline', displayName: 'Qoder 工作号' })
-    updateVolatile(mounted.byokRoute, edited.byokRoute)
+    const edited = parse({ displayName: 'Qoder 工作号' })
     updateVolatile(mounted.displayName, edited.displayName)
 
-    expect(recorded.routes).toEqual([QODER_PROVIDER, QODER_BYOK_PROVIDER])
-    recorded.volatileListener?.([['byokRoute']])
-    expect(recorded.routes).toEqual([QODER_PROVIDER])
+    // The label is republished through the directory handle, not by
+    // re-registering: the provider set never changes any more.
+    expect(recorded.directory.map(entry => entry.displayName)).toEqual(['Qoder CN'])
+    recorded.volatileListener?.([['displayName']])
     expect(recorded.directory.map(entry => entry.displayName)).toEqual(['Qoder 工作号'])
+    expect(recorded.routes).toEqual([QODER_PROVIDER])
 
     recorded.replaced.length = 0
     recorded.volatileListener?.([['disabledModels']])

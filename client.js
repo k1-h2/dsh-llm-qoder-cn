@@ -57,7 +57,6 @@ window.__ModuleLoader__.load({
       windowDefault: '默认',
       windowDefaultHint: '跟随上游声明的窗口',
       vision: '读图',
-      custom: '自定义',
       free: '免费',
       advanced: '高级设置',
       advancedHint: '以下为细节参数，通常无需改动。',
@@ -76,9 +75,6 @@ window.__ModuleLoader__.load({
         abortGraceSeconds: '中断宽限（秒）',
         coldMaxTurns: '旁路请求轮次',
         modelAliases: '模型别名',
-      },
-      unionLabels: {
-        byokRoute: { separate: '独立分组', inline: '并入主分组' },
       },
     }
     const en = {
@@ -105,7 +101,6 @@ window.__ModuleLoader__.load({
       windowDefault: 'Default',
       windowDefaultHint: "Follow upstream's declared window",
       vision: 'Vision',
-      custom: 'Custom',
       free: 'Free',
       advanced: 'Advanced',
       advancedHint: 'Detail parameters; rarely changed.',
@@ -125,19 +120,13 @@ window.__ModuleLoader__.load({
         coldMaxTurns: 'Side-channel turns',
         modelAliases: 'Model aliases',
       },
-      unionLabels: {
-        byokRoute: { separate: 'Separate group', inline: 'Merge into main' },
-      },
     }
 
     /**
      * Scalars shown under Advanced, in order, with how to render each.
      *
-     * `byokRoute` and `byokDisplayName` are deliberately absent. They only
-     * affect *custom* (BYOK) models the account added itself, which most
-     * accounts — this one included — do not have; with none, the secondary
-     * route advertises nothing and both fields change nothing a user can see.
-     * They remain in the Config schema for a deployment that needs them.
+     * The schema is the source of truth for labels, help text and bounds; this
+     * list only decides order and which control each field gets.
      */
     const ADVANCED = [
       ['displayName', 'text'],
@@ -224,44 +213,6 @@ window.__ModuleLoader__.load({
           error => { clearTimeout(timer); reject(error) },
         )
       })
-    }
-
-    /**
-     * Read one schema node's enum members.
-     *
-     * schemastery serializes `z.union([...])` as `type: 'union'` with a `list`
-     * of REF INDICES into the envelope's `refs` table, each resolving to a
-     * `{ type: 'const', value }` node — not to the bare strings. The envelope
-     * is therefore required: reading `list` alone yields indices and renders an
-     * empty control, which is exactly how this dropdown first shipped broken.
-     *
-     * @param node - the union node, or undefined when the field is absent.
-     * @param refs - the envelope's ref table, for the indirect member nodes.
-     * @returns member values in declaration order.
-     */
-    function enumMembers(node, refs) {
-      if (node === undefined || node === null) return []
-      const entries = Array.isArray(node.list) ? node.list : []
-      const out = []
-      for (const entry of entries) {
-        const member = typeof entry === 'number' ? refs?.[entry] : entry
-        const value = member !== null && typeof member === 'object' ? member.value : member
-        if (typeof value === 'string') out.push(value)
-      }
-      return out
-    }
-
-    /**
-     * Human label for one union member, falling back to the raw id.
-     *
-     * Nested so each field reads in the user's language rather than exposing
-     * the wire values (`separate`, `inline`).
-     */
-    function unionLabel(t, key, member) {
-      const table = t('unionLabels') ?? {}
-      const perField = table[key]
-      const label = perField !== null && typeof perField === 'object' ? perField[member] : undefined
-      return typeof label === 'string' ? label : member
     }
 
     /** Compact label for a token count. */
@@ -509,9 +460,6 @@ window.__ModuleLoader__.load({
               priceSuffix(t, m.priceFactor) !== ''
                 ? h('span', { key: 'p', style: css.price }, ` · ${priceSuffix(t, m.priceFactor)}`)
                 : null,
-              (m.source === 'user' || m.source === 'custom')
-                ? h('span', { key: 'c', style: { ...css.tag, marginLeft: '6px' } }, t('custom'))
-                : null,
             ),
             h('div', { style: css.id }, m.id),
           ),
@@ -622,15 +570,7 @@ window.__ModuleLoader__.load({
         const overridden = user !== null && typeof user === 'object' && Object.hasOwn(user, key)
 
         let control
-        if (kind === 'union') {
-          const members = enumMembers(node, refs)
-          control = h('select', {
-            style: css.select,
-            value: current === undefined ? '' : String(current),
-            disabled: !writable,
-            onChange: event => set(key, event.target.value),
-          }, members.map(m => h('option', { key: m, value: m }, unionLabel(t, key, m))))
-        } else if (kind === 'json') {
+        if (kind === 'json') {
           control = h('input', {
             style: { ...css.input, fontFamily: 'ui-monospace, monospace' },
             defaultValue: current === undefined ? '{}' : JSON.stringify(current),

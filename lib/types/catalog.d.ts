@@ -6,14 +6,11 @@
  * `resolveModel`, where unknown ids fall back to `auto`.
  * @module dsh-llm-qoder/catalog
  */
-import type { ModelSource } from '@qodercn-ai/qodercn-agent-sdk';
 /** One Qoder CLI model entry. */
 export interface QoderCatalogModel {
     id: string;
     name: string;
     description?: string;
-    /** Where the model came from: `user` and `custom` mark account-added models. */
-    source?: ModelSource;
     /**
      * Whether the CLI reports vision input for this model. Only a live catalog
      * entry can carry it: the static fallback below declares no capability it

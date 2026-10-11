@@ -61,10 +61,23 @@ SDK 会回退到 PATH 上的系统 `qoderclicn`。
 
 装好后进 **设置 → Qoder CN**（与「通用设置 / 模型 / 内置插件」并列的独立一项）。
 
-本插件自带 `client.js`，通过 `settings.section` slot 注册这一页——这是必需的，因为
-DSH 虽然能从插件导出的 `Config` schema 自动生成配置页，但那个自动页渲染在**「内置插件」**
-分区内部。若客户端 bundle 没有装载该分区，schema 注册了、设置服务也读得到，
-但**既没有导航项也没有页面**。自带 `settings.section` 就绕开了这个依赖。
+### 为什么这页需要两件东西才出现
+
+配置页要出现，必须**同时**满足两个条件，缺一个都毫无提示地什么都不显示：
+
+**1. 每个字段必须 `.volatile()`。** DSH 的 settings 服务用
+`volatileForm(schema)`（`dsh-settings/lib/types/schema.js`）构造表单，它**只保留带
+`meta.volatile` 的节点**；一个字段全是非 volatile 的 object 会塌缩成 `undefined`，
+`describe()` 随即 `return []` 丢掉整个命名空间——插件照常加载、模型照常可用，
+但命名空间**从未下发到客户端**。本插件 18 个字段全部标记 `.volatile()`，这同时也是
+语义正确的声明：它们是稳定的标量/列表/映射引用，编辑后即时生效。
+
+**2. 插件必须自带 `client.js` 注册 `settings.section`。** DSH 的自动配置页渲染在
+**「内置插件」分区内部**；自带 `settings.section` 才有独立的顶层导航项，不依赖那个分区。
+
+只满足第 2 条而漏掉第 1 条，正是本插件 v0.1.x 的实际故障：`client.js` 正确注册了
+`settings.section`，但 `whileServed` 门控等的是命名空间下发，而命名空间因 volatile
+缺失永远不来，于是设置项一直不出现。修复见 v0.2.0。
 
 页面仍由宿主上报的 schema 驱动，所以表单不可能与 `src/config.ts` 的声明脱节。
 读写走 `ctx.configForms`（与官方「模型」页同一个共享设置镜像）：

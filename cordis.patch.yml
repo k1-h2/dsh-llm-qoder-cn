@@ -1,6 +1,6 @@
-# The dsh-llm-qoder-cn bundle patch: activates the Qoder CN provider adapter as
+# The dsh-qoder-link bundle patch: activates the Qoder CN provider adapter as
 # a profile layer row over the profile root. The user's profile cordis.patch.yml
 # may address this row by id (`llm-qoder-cn`) to override any Config field.
 - insert:
     - id: llm-qoder-cn
-      name: 'dsh-llm-qoder-cn'
+      name: 'dsh-qoder-link'

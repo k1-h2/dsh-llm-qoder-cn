@@ -20,7 +20,7 @@
  * through their `replace` handles when a field that decides a shape changes.
  * See `src/live.ts` for the mechanism.
  *
- * @module dsh-llm-qoder-cn
+ * @module dsh-qoder-link
  */
 
 import type { Context } from '@deepseek-ai/cordis'

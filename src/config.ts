@@ -12,7 +12,7 @@
  * groups below are arranged the way a user reads them (identity → capacity →
  * context → timeouts → models → aliases).
  *
- * @module dsh-llm-qoder-cn/config
+ * @module dsh-qoder-link/config
  */
 
 import { isVolatile } from '@deepseek-ai/cosmokit'

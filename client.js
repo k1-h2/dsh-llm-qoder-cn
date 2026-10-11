@@ -1,5 +1,5 @@
 /**
- * dsh-llm-qoder-cn — browser half.
+ * dsh-qoder-link — browser half.
  *
  * Contributes one top-level settings section (id `qoder-cn`) whose entire
  * content is the model list: every model the account exposes, each with an
@@ -21,7 +21,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-llm-qoder-cn',
+  id: 'dsh-qoder-link',
   factory: require => {
     const module = { exports: {} }
     const exports = module.exports
@@ -710,7 +710,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = inject
-    exports.name = 'dsh-llm-qoder-cn'
+    exports.name = 'dsh-qoder-link'
     exports.__test = { windowLabel, priceSuffix, ADVANCED, zh, en }
     return module.exports
   },

@@ -12,7 +12,7 @@
  * groups below are arranged the way a user reads them (identity → capacity →
  * context → timeouts → models → aliases).
  *
- * @module dsh-llm-qoder-cn/config
+ * @module dsh-qoder-link/config
  */
 import z from '@deepseek-ai/schemastery';
 /** How to treat the account's custom (user-added) models on the main route. */

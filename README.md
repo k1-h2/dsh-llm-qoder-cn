@@ -1,4 +1,4 @@
-# dsh-llm-qoder-cn
+# dsh-qoder-link
 
 把 **Qoder CN 订阅**接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）
 的 LLM 适配器插件。
@@ -28,8 +28,8 @@ v = zn ? { cliCommands: ["qoderclicn"], configDirName: ".qoder-cn" }
 
 点侧边栏的 **插件 → 添加插件**，把下面任意一个填进输入框，然后点「安装」：
 
-- `github:k1-h2/dsh-llm-qoder-cn`
-- `https://github.com/k1-h2/dsh-llm-qoder-cn`
+- `github:k1-h2/dsh-qoder-link`
+- `https://github.com/k1-h2/dsh-qoder-link`
 - 本地目录路径（装自己改过的版本时用）
 
 **安装源**保持默认即可，它只决定 npm 依赖从哪里下载。
@@ -72,7 +72,7 @@ SDK 声明了安装脚本（下载它自己的 worker runtime），pnpm 默认�
 
 ```yaml
 - id: llm-qoder-cn
-  name: dsh-llm-qoder-cn
+  name: dsh-qoder-link
   config:
     displayName: Qoder CN (工作号)
     maxSessions: 4

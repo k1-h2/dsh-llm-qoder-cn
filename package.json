@@ -1,5 +1,5 @@
 {
-  "name": "dsh-llm-qoder-cn",
+  "name": "dsh-qoder-link",
   "displayName": "Qoder CN (Agent SDK)",
   "description": "DeepSeek Harness LLM adapter for Qoder CN subscriptions, built on the official @qodercn-ai/qodercn-agent-sdk. Reuses the local qoderclicn login, exposes a fully configurable settings surface (context window, session pool, timeouts, model allow/deny lists, aliases).",
   "version": "0.6.0",
@@ -17,11 +17,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/k1-h2/dsh-llm-qoder-cn.git"
+    "url": "git+https://github.com/k1-h2/dsh-qoder-link.git"
   },
-  "homepage": "https://github.com/k1-h2/dsh-llm-qoder-cn#readme",
+  "homepage": "https://github.com/k1-h2/dsh-qoder-link#readme",
   "bugs": {
-    "url": "https://github.com/k1-h2/dsh-llm-qoder-cn/issues"
+    "url": "https://github.com/k1-h2/dsh-qoder-link/issues"
   },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

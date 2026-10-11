@@ -22,7 +22,7 @@
  * a plain value for direct callers and tests, or a thunk over a live cell —
  * so an option can be live without forcing every caller to wrap it.
  *
- * @module dsh-llm-qoder-cn/live
+ * @module dsh-qoder-link/live
  */
 /**
  * A configuration value a consumer reads at each use: the value itself, or a

@@ -15,7 +15,7 @@
  * host-side write would have to reach into the settings service and could race
  * the form.
  *
- * @module dsh-llm-qoder-cn/api
+ * @module dsh-qoder-link/api
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { QoderAdapter } from './adapter.ts';

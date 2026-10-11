@@ -27,21 +27,32 @@ MIT 不要求衍生作品沿用同一许可（无 copyleft 条款），但本项
    两个包的 `dist/*.d.ts` 经比对逐字节相同，故 API 层面为直接替换。
 2. **独立 provider id**：`qoder-cn` / `qoder-cn-byok`（上游为 `qoder` / `qoder-byok`），
    以便与上游插件在同一 profile 中共存而不冲突。
-3. **可配置设置面**：新增 `src/config.ts`，声明 18 个带说明的配置项。DSH 的 settings
-   服务会读取插件导出的 `Config` schema 并自动生成设置页（`autoGenerate` 默认为真），
-   因此本插件**无需自带 client bundle 即可拥有原生设置界面**。上游仅暴露
-   `maxSessions` 与 `modelCacheTtlSeconds` 两项且未提供界面。
-4. **上下文窗口可选**：新增 `contextWindowMode`（`auto` / `default` / `max` / `custom`）。
-   上游固定使用 `defaultContextWindow`（通常 200K）；现在可显式选择 1M 上限或自定义值。
-   选大窗口会推迟 harness 的自动压缩阈值，因此 `pickContextWindow` 的注释里写明了取舍。
-5. **模型过滤与别名**：新增 `enabledModels` / `disabledModels` 允许与拒绝清单
-   （均支持用别名书写）、`modelAliases` 自定义别名映射。
+3. **可配置设置面**：新增 `src/config.ts`，声明 15 个带中文说明的配置项。设置页由本插件
+   自带的 `client.js` 注册为**独立顶层导航项**（`settings.section`）——DSH 的自动配置页渲染在
+   「内置插件」分区内部，要独立入口就得自带浏览器半侧。两个前提缺一不可：每个字段必须
+   `.volatile()`（`volatileForm` 只保留 volatile 节点，否则整个命名空间不会下发到客户端），
+   且每个字段必须在**使用处**读取（见第 8 条）。上游仅暴露 `maxSessions` 与
+   `modelCacheTtlSeconds` 两项且未提供界面。
+4. **上下文窗口按模型可选**：新增 `modelContextWindows`（Qoder 模型 id → token 数）。设置页
+   为每个模型提供下拉，列出上游为该模型声明的全部窗口（如 200K / 400K / 1M），默认档跟随
+   上游声明的**会话窗口**；上游固定使用 `defaultContextWindow`（通常 200K）。注意
+   `maxInputTokens` 不是替代品——它是单次请求的上限，常低于会话窗口。选大窗口会推迟
+   harness 的自动压缩阈值，取舍写在 `pickContextWindow` 的注释里。
+5. **模型过滤与别名**：新增 `disabledModels` 拒绝清单与 `modelAliases` 别名映射。用拒绝清单
+   而非允许清单，是因为账号目录会变——允许清单会把上游后来新增的模型静默藏掉。
 6. **超时可调**：`toolResultTimeoutSeconds`、`catalogFetchTimeoutSeconds`、
    `abortGraceSeconds`、`coldMaxTurns` 由硬编码常量改为配置项。
 7. **修正上游死代码**：上游 `render.ts` 导出了 `renderIdentityAppend`，但全仓库无调用点，
    构建产物中亦不存在（被 tree-shaking 移除），即该身份覆盖从未生效。本项目将其真正接入
    `identityOverride`，并**默认关闭**——因为该段提示会指示模型否认自身来源，
    属于应当显式选择而非默认继承的产品决策。
+8. **设置改动即时生效**：DSH 对「只改 volatile 字段」的写入**不重启插件**，而是把新值就地写进
+   运行中插件**已经持有的那个** `Volatile` 引用（`cordis-plugin-loader` 的 `Entry.update` →
+   `_commitVolatile`），`apply()` 不会再被调用。上游和本仓库 0.6.0 之前都在挂载时把配置抄进
+   自己的字段，于是设置页写成功、`cordis.patch.yml` 落盘也正确，插件却一直按挂载时的值作答
+   （表现为「点了没反应」）。本仓库改为全部按需读取（`src/live.ts` 的 `Live<T>` 与
+   `liveConfig()`），只对决定注册形状的 `byokRoute` 与两个 `displayName` 监听
+   `loader/volatile-update` 就地重发。
 
 ## 上游的原始文件
 

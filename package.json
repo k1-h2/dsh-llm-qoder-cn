@@ -1,11 +1,11 @@
 {
   "name": "dsh-qoder-link",
   "displayName": "Qoder CN (Agent SDK)",
-  "description": "DeepSeek Harness LLM adapter for Qoder CN subscriptions, built on the official @qodercn-ai/qodercn-agent-sdk. Reuses the local qoderclicn login, exposes a fully configurable settings surface (context window, session pool, timeouts, model allow/deny lists, aliases).",
+  "description": "DeepSeek Harness LLM adapter for Qoder CN subscriptions, built on the official @qodercn-ai/qodercn-agent-sdk. Reuses the local qoderclicn login, and exposes a fully configurable settings page (per-model context window, session pool, timeouts, model deny list, aliases).",
   "version": "0.6.0",
   "type": "module",
   "license": "MIT",
-  "author": "",
+  "author": "k1-h2",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
@@ -83,6 +83,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit false --emitDeclarationOnly",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   }
 }

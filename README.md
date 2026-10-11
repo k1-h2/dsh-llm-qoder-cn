@@ -27,24 +27,35 @@ v = zn ? { cliCommands: ["qoderclicn", "qodercn"], configDirName: ".qoder-cn", .
 
 ```sh
 # 从 GitHub 装
-dsh plugin --profile web add github:<your-name>/dsh-llm-qoder-cn
+dsh plugin --profile web add github:k1-h2/dsh-llm-qoder-cn
 
 # 或从 npm 装（发布后）
 dsh plugin --profile web add dsh-llm-qoder-cn
 ```
 
 首次安装需批准 SDK 的 postinstall（它下载 `qoderclicn` worker runtime）。
-pnpm 11+ 默认拦截并在 profile 的 `pnpm-workspace.yaml` 写入占位：
+pnpm 11+ 默认拦截，并在 profile 的 `pnpm-workspace.yaml` 写入占位：
 
 ```yaml
 allowBuilds:
   '@qodercn-ai/qodercn-agent-sdk': true    # ← 把占位改成 true
 ```
 
-改完重跑 `add` 即可。这是 dsh 对任何带 postinstall 依赖的标准 fail-loud 流程。
-不批准也能用：SDK 会回退到 PATH 上的系统 `qoderclicn`。
+> ⚠️ **请先写好 `allowBuilds` 再执行 `add`。**
+>
+> 如果直接 `add` 并在这一步失败，pnpm 已经把依赖装进 `node_modules` 了；此时**重跑
+> `add` 会显示 "Already up to date" 并跳过 bundle 注册**，结果是插件装了但**没有生效**
+> （`--dump-config` 里看不到它）。这是 pnpm 的幂等行为，不是本插件的缺陷，但很容易踩。
+>
+> 推荐的顺序：先建好 profile（任一次 `dsh` 调用即可），把上面那行改成 `true`，再 `add`。
+>
+> **已经踩了怎么办？** 删掉 profile 的 `node_modules/` 与 `pnpm-lock.yaml`，保留
+> `pnpm-workspace.yaml` 里的 `allowBuilds`，然后重跑 `add`。
 
-装完**重启 DSH**，模型选择器出现 `Qoder CN` 分组。
+这是 dsh 对任何带 postinstall 依赖的标准 fail-loud 流程。不批准也能用：
+SDK 会回退到 PATH 上的系统 `qoderclicn`。
+
+装完**重启 DSH**，模型选择器出现 `Qoder CN` 分组，设置里出现 **Qoder CN** 一项。
 
 ## 设置界面
 

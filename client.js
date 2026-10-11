@@ -56,6 +56,7 @@ window.__ModuleLoader__.load({
       windowDefaultHint: '跟随上游声明的窗口',
       vision: '读图',
       custom: '自定义',
+      free: '免费',
       advanced: '高级设置',
       advancedHint: '以下为细节参数，通常无需改动。',
       show: '展开',
@@ -103,6 +104,7 @@ window.__ModuleLoader__.load({
       windowDefaultHint: "Follow upstream's declared window",
       vision: 'Vision',
       custom: 'Custom',
+      free: 'Free',
       advanced: 'Advanced',
       advancedHint: 'Detail parameters; rarely changed.',
       show: 'Show',
@@ -162,6 +164,7 @@ window.__ModuleLoader__.load({
       nameText: { fontSize: '0.92em', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       id: { fontSize: '0.76em', opacity: 0.55, fontFamily: 'ui-monospace, monospace' },
       tag: { fontSize: '0.72em', padding: '1px 6px', borderRadius: '5px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', opacity: 0.75 },
+      price: { fontSize: '0.9em', opacity: 0.7, fontWeight: 400 },
       select: { padding: '5px 8px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35))', background: 'var(--dsw-alias-bg-base, transparent)', color: 'inherit', font: 'inherit', fontSize: '0.85em', minWidth: '104px' },
       switch: { width: '17px', height: '17px', cursor: 'pointer', accentColor: 'var(--dsw-alias-brand-primary, #4c6ef5)' },
       note: { fontSize: '0.82em', opacity: 0.62, lineHeight: 1.5 },
@@ -202,6 +205,19 @@ window.__ModuleLoader__.load({
       if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1))}M`
       if (n >= 1000) return `${Math.round(n / 1000)}K`
       return String(n)
+    }
+
+    /**
+     * The credit multiplier upstream quotes, as a short suffix.
+     *
+     * `0` renders as 免费 rather than `x0`, matching how the Qoder client shows
+     * a free model. A model upstream quoted no multiplier for gets no suffix at
+     * all — inventing one would misstate its cost.
+     */
+    function priceSuffix(t, factor) {
+      if (typeof factor !== 'number' || !Number.isFinite(factor) || factor < 0) return ''
+      if (factor === 0) return t('free')
+      return `x${Number(factor.toFixed(4))}`
     }
 
     /**
@@ -341,6 +357,9 @@ window.__ModuleLoader__.load({
             h('div', { style: css.nameText },
               m.name,
               m.vision === true ? h('span', { key: 'v', style: { ...css.tag, marginLeft: '6px' } }, t('vision')) : null,
+              priceSuffix(t, m.priceFactor) !== ''
+                ? h('span', { key: 'p', style: css.price }, ` · ${priceSuffix(t, m.priceFactor)}`)
+                : null,
               (m.source === 'user' || m.source === 'custom')
                 ? h('span', { key: 'c', style: { ...css.tag, marginLeft: '6px' } }, t('custom'))
                 : null,
@@ -531,7 +550,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply
     exports.inject = inject
     exports.name = 'dsh-llm-qoder-cn'
-    exports.__test = { windowLabel, ADVANCED, zh, en }
+    exports.__test = { windowLabel, priceSuffix, ADVANCED, zh, en }
     return module.exports
   },
 })

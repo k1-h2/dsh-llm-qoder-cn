@@ -66,7 +66,6 @@ export class QoderModelCatalog {
       ...model.isVl === true ? { isVl: true } : {},
     }))
   }
-
   private async fetch(): Promise<readonly ModelInfo[]> {
     const q = query({
       prompt: inertInput(),
@@ -78,6 +77,21 @@ export class QoderModelCatalog {
       await q.close().catch(() => undefined)
     }
   }
+}
+
+/**
+ * The credit multiplier upstream quotes for one model.
+ *
+ * Present on every live entry as `priceFactor`; `0` means the model is free.
+ * Returned as a number rather than a formatted string so callers decide how to
+ * render it.
+ *
+ * @param entry - one live catalog entry.
+ * @returns the multiplier, or undefined when upstream did not quote one.
+ */
+export function priceFactorOf(entry: { priceFactor?: number }): number | undefined {
+  const value = entry.priceFactor
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 /** Streaming prompt that never yields, so no model turn runs during the fetch. */

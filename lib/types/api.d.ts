@@ -43,6 +43,14 @@ interface ModelRow {
     defaultContextWindow: number;
     /** The user's explicit choice, or undefined when following upstream. */
     override?: number;
+    /**
+     * Credit multiplier upstream quotes for this model; `0` means free. Absent
+     * when upstream quoted none, so the page shows no suffix rather than a
+     * fabricated one.
+     */
+    priceFactor?: number;
+    /** Whether the model supports a reasoning-effort choice. */
+    reasoning: boolean;
 }
 /**
  * Build the model rows: the live catalog joined with the user's choices.

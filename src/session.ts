@@ -550,21 +550,13 @@ export class QoderSession {
   private emit(chunk: StreamChunk): void { this.queue?.push({ kind: 'chunk', chunk }) }
 
   private usage(): TokenUsage {
-    // The qoder CLI's per-stream usage frames are zeroed by default (no
-    // metering data). Prefer our session-level estimate of the actual request
-    // input — priced like the harness token meter (4 chars/token over the
-    // rendered conversation) — so the harness context meter and compaction
-    // thresholds reflect the real occupancy instead of ~0.
-    if (this.estimatedInputTokens !== undefined && this.estimatedInputTokens > 0) {
-      return {
-        inputTokens: this.estimatedInputTokens,
-        outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
-        ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
-      }
-    }
+    // Prefer real metering whenever the CLI actually reports it. Upstream's
+    // per-stream token frames are zeroed on this plan (probed: input_tokens,
+    // output_tokens and every cache field stay 0 across turns), so in practice
+    // the estimate below carries the context meter. Checking reality first
+    // means a plan or CLI build that DOES report metering — including cache
+    // reads — surfaces it instead of being masked by the estimate.
     const real = this.lastUsage
-    // The SDK's input_tokens includes cache reads/writes, so subtract them
-    // into disjoint buckets, matching the harness TokenUsage convention.
     if (real !== undefined
       && typeof real.input_tokens === 'number'
       && typeof real.output_tokens === 'number'
@@ -572,10 +564,23 @@ export class QoderSession {
       const cacheRead = typeof real.cache_read_input_tokens === 'number' ? real.cache_read_input_tokens : 0
       const cacheWrite = typeof real.cache_creation_input_tokens === 'number' ? real.cache_creation_input_tokens : 0
       return {
+        // The SDK's input_tokens includes cache reads/writes, so subtract them
+        // into disjoint buckets, matching the harness TokenUsage convention.
         inputTokens: Math.max(0, real.input_tokens - cacheRead - cacheWrite),
         outputTokens: real.output_tokens,
         ...cacheRead > 0 ? { cacheReadTokens: cacheRead } : {},
         ...cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {},
+        ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
+      }
+    }
+    // No metering available: price the request ourselves, the same way the
+    // harness token meter prices the surface (4 chars/token over the rendered
+    // conversation). Without this the context meter would read ~0% and
+    // auto-compaction would never fire.
+    if (this.estimatedInputTokens !== undefined && this.estimatedInputTokens > 0) {
+      return {
+        inputTokens: this.estimatedInputTokens,
+        outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
         ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
       }
     }

@@ -20,6 +20,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { QoderAdapter } from './adapter.ts'
+import { priceFactorOf } from './models.ts'
 
 /** Route prefix this plugin owns; the client resolves it relative to the page. */
 export const API_PREFIX = '/api/llm-qoder-cn'
@@ -46,6 +47,14 @@ interface ModelRow {
   defaultContextWindow: number
   /** The user's explicit choice, or undefined when following upstream. */
   override?: number
+  /**
+   * Credit multiplier upstream quotes for this model; `0` means free. Absent
+   * when upstream quoted none, so the page shows no suffix rather than a
+   * fabricated one.
+   */
+  priceFactor?: number
+  /** Whether the model supports a reasoning-effort choice. */
+  reasoning: boolean
 }
 
 /** Answer one request with JSON. */
@@ -79,6 +88,7 @@ export async function buildRows(adapter: QoderAdapter): Promise<ModelRow[]> {
     const choices = new Set<number>(entry.availableContextWindows ?? [])
     choices.add(upstream)
     if (override !== undefined) choices.add(override)
+    const priceFactor = priceFactorOf(entry)
     return {
       id: entry.value,
       name: entry.displayName.length > 0 ? entry.displayName : entry.value,
@@ -90,6 +100,8 @@ export async function buildRows(adapter: QoderAdapter): Promise<ModelRow[]> {
       contextWindows: [...choices].sort((a, b) => a - b),
       defaultContextWindow: upstream,
       ...override === undefined ? {} : { override },
+      ...priceFactor === undefined ? {} : { priceFactor },
+      reasoning: entry.isReasoning !== false,
     }
   })
 }

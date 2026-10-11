@@ -30,3 +30,16 @@ export declare class QoderModelCatalog {
     models(): Promise<readonly QoderCatalogModel[]>;
     private fetch;
 }
+/**
+ * The credit multiplier upstream quotes for one model.
+ *
+ * Present on every live entry as `priceFactor`; `0` means the model is free.
+ * Returned as a number rather than a formatted string so callers decide how to
+ * render it.
+ *
+ * @param entry - one live catalog entry.
+ * @returns the multiplier, or undefined when upstream did not quote one.
+ */
+export declare function priceFactorOf(entry: {
+    priceFactor?: number;
+}): number | undefined;

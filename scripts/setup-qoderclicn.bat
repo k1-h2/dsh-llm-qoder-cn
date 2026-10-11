@@ -10,24 +10,25 @@ rem
 rem  usage:
 rem    setup-qoderclicn.bat            install if missing, then sign in + verify
 rem    setup-qoderclicn.bat --check    verify only, installs nothing, no pause
+rem    setup-qoderclicn.bat --login    sign in again only, for switching account
 rem    setup-qoderclicn.bat --gui      same as no args, but never pauses at the
 rem                                    end; the DSH settings page shows the
 rem                                    output of such a run live
+rem    setup-qoderclicn.bat /?         this help
 rem =====================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "PKG=@qodercn-ai/qoderclicn"
 set "MODE=setup"
 if /I "%~1"=="--check" set "MODE=check"
+if /I "%~1"=="--login" set "MODE=login"
 if /I "%~1"=="/?"      goto :usage
 
 echo.
 echo  ==============================================================
-if "%MODE%"=="check" (
-    echo   Qoder CN CLI - check only, nothing installed or changed
-) else (
-    echo   Qoder CN CLI - install and sign-in wizard
-)
+if "%MODE%"=="check" echo   Qoder CN CLI - check only, nothing installed or changed
+if "%MODE%"=="login" echo   Qoder CN CLI - re-login only, nothing installed
+if "%MODE%"=="setup" echo   Qoder CN CLI - install and sign-in wizard
 echo  ==============================================================
 
 rem ---------------------------------------------------------------- 1 node
@@ -72,13 +73,13 @@ if defined CLIV (
 rem ------------------------------------------------------------- 3 install
 echo.
 echo [3/5] Install the CLI
-if "%MODE%"=="check" (
+if not "%MODE%"=="setup" (
     if not defined QCMD (
-        echo       [X] not installed, and check mode will not install it.
-        echo             Run this script again without --check.
+        echo       [X] not installed, and %MODE% mode will not install it.
+        echo             Run this script without an argument to install it.
         goto :fail
     )
-    echo       [--] check mode, skipping install
+    echo       [--] %MODE% mode, skipping install
     goto :login
 )
 if defined QCMD (
@@ -119,10 +120,16 @@ if "%MODE%"=="check" (
     goto :verify
 )
 set "ST=%TEMP%\setup-qoderclicn-status.txt"
+if "%MODE%"=="login" (
+    echo       Re-login: the browser sign-in opens even when this machine is
+    echo       already signed in, so you can move to another account.
+    goto :signin
+)
 call "!QCMD!" status > "%ST%" 2>&1
 findstr /I /C:"Username" "%ST%" >nul 2>nul
 if not errorlevel 1 goto :already
 echo       Not signed in yet, so the browser sign-in starts now.
+:signin
 echo       No account yet? Register at https://qoder.com.cn first.
 echo       If a sign-in link is printed below, open it in your browser.
 echo       Finish it there; this script keeps checking by itself.
@@ -194,6 +201,7 @@ goto :done
 echo.
 echo   setup-qoderclicn.bat            install what is missing, then sign in
 echo   setup-qoderclicn.bat --check    verify only: version / sign-in / dirs / models
+echo   setup-qoderclicn.bat --login    re-open the browser sign-in, install nothing
 echo   setup-qoderclicn.bat --gui      as above but never pauses, for the DSH page
 echo   setup-qoderclicn.bat /?         this help
 echo.

@@ -8,7 +8,7 @@
  * - `GET <prefix>/models` — every model the account exposes, each with its
  *   enabled state, the window it will use, and the windows it may use.
  * - `GET <prefix>/setup` — state of the CLI helper run, including what it printed.
- * - `POST <prefix>/setup` — start that helper: `{"mode":"check"|"configure"}`.
+ * - `POST <prefix>/setup` — start that helper: `{"mode":"configure"|"login"}`.
  *
  * Config writes deliberately do NOT come through here. The browser half already
  * holds a revision-fenced form for this plugin's config namespace

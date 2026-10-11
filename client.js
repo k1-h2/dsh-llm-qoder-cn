@@ -52,7 +52,7 @@ window.__ModuleLoader__.load({
       saved: '已保存',
       saving: '保存中…',
       enabledCount: '已启用',
-      noModels: '账号未返回任何模型。请确认本机 qoderclicn 已登录。',
+      noModels: '账号没有返回任何模型：一般是本机 qoderclicn 还没装好，或者还没登录。',
       search: '搜索模型…',
       onlyEnabled: '只看已启用',
       selectAll: '全部启用',
@@ -71,11 +71,13 @@ window.__ModuleLoader__.load({
       cliGroup: 'Qoder CN CLI',
       cliHint: '插件复用本机 qoderclicn 的登录态。这里可以直接跑随包附带的配置脚本：缺 CLI 就装，未登录就拉起浏览器登录。',
       cliRun: '一键配置',
-      cliCheck: '仅体检',
+      cliLogin: '重新登录',
       cliRunning: '正在执行，输出持续刷新…',
       cliStartFailed: '无法启动配置脚本',
       cliExitOk: '配置脚本执行完成',
       cliExitFail: '配置脚本未通过，退出码',
+      cliShowLog: '查看输出',
+      cliHideLog: '收起输出',
       advancedFields: {
         displayName: '分组名称',
         maxSessions: '并发会话数',
@@ -104,7 +106,7 @@ window.__ModuleLoader__.load({
       saved: 'Saved',
       saving: 'Saving…',
       enabledCount: 'enabled',
-      noModels: 'The account returned no models. Check that qoderclicn is signed in.',
+      noModels: 'The account returned no models - usually qoderclicn is not installed on this machine, or not signed in.',
       search: 'Search models…',
       onlyEnabled: 'Enabled only',
       selectAll: 'Enable all',
@@ -123,11 +125,13 @@ window.__ModuleLoader__.load({
       cliGroup: 'Qoder CN CLI',
       cliHint: 'The plugin reuses this machine\u2019s qoderclicn sign-in. Run the bundled helper from here: it installs the CLI when missing and opens the browser sign-in when signed out.',
       cliRun: 'Configure',
-      cliCheck: 'Check only',
+      cliLogin: 'Re-login',
       cliRunning: 'Running, output refreshes…',
       cliStartFailed: 'Could not start the helper',
       cliExitOk: 'Helper finished',
       cliExitFail: 'Helper failed with exit code',
+      cliShowLog: 'Show output',
+      cliHideLog: 'Hide output',
       advancedFields: {
         displayName: 'Group name',
         maxSessions: 'Concurrent sessions',
@@ -183,6 +187,9 @@ window.__ModuleLoader__.load({
       switch: { width: '17px', height: '17px', cursor: 'pointer', accentColor: 'var(--dsw-alias-brand-primary, #4c6ef5)' },
       note: { fontSize: '0.82em', opacity: 0.62, lineHeight: 1.5 },
       err: { fontSize: '0.86em', color: 'var(--dsw-alias-label-danger, #e03131)' },
+      guide: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--dsw-alias-label-danger, #e03131)', background: 'rgba(224,49,49,0.07)' },
+      guideText: { flex: '1 1 240px', fontSize: '0.88em', lineHeight: 1.5, color: 'var(--dsw-alias-label-danger, #e03131)' },
+      btnAlert: { border: '1px solid var(--dsw-alias-label-danger, #e03131)', color: 'var(--dsw-alias-label-danger, #e03131)' },
       group: { display: 'flex', flexDirection: 'column', gap: '10px', border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))', borderRadius: '10px', padding: '14px 16px' },
       advLabel: { fontSize: '0.88em' },
       h3: { margin: 0, fontSize: '0.95em' },
@@ -440,10 +447,11 @@ window.__ModuleLoader__.load({
       // ── CLI helper ────────────────────────────────────────────────────────
       // The host runs the script, so the page only asks and then reads what it
       // printed. `setup` stays undefined-shaped until the first answer arrives:
-      // a host older than this route simply never answers, and the panel is
-      // still renderable with both buttons inert-free.
+      // a host older than this route simply never answers, and the group still
+      // renders with both buttons working.
       const [setup, setSetup] = useState(undefined)
       const [setupError, setSetupError] = useState(undefined)
+      const [logOpen, setLogOpen] = useState(false)
       const logRef = useRef(null)
 
       const pollSetup = useCallback(async () => {
@@ -470,6 +478,7 @@ window.__ModuleLoader__.load({
 
       const setupRunning = setup?.running === true
       const setupCode = setup !== undefined && setup.running === false ? setup.code : undefined
+      const setupFinishedAt = setup?.finishedAt
       const setupLines = Array.isArray(setup?.lines) ? setup.lines : []
 
       useEffect(() => { void pollSetup() }, [pollSetup])
@@ -478,6 +487,22 @@ window.__ModuleLoader__.load({
         const timer = setInterval(() => { void pollSetup() }, 1200)
         return () => clearInterval(timer)
       }, [setupRunning, pollSetup])
+
+      /**
+       * The output panel follows the run, not the history: open while the
+       * script is alive, folded away one second after it ends. Pressing 查看
+       * 输出 brings the text back, and a finished run from before a reload is
+       * never re-expanded, because the panel starts closed.
+       */
+      useEffect(() => {
+        if (setupRunning) {
+          setLogOpen(true)
+          return undefined
+        }
+        if (setupFinishedAt === undefined) return undefined
+        const timer = setTimeout(() => setLogOpen(false), 1000)
+        return () => clearTimeout(timer)
+      }, [setupRunning, setupFinishedAt])
 
       // The catalog is read from the CLI, so a helper that just installed or
       // signed into it changes what the list should show — and the host has
@@ -503,6 +528,22 @@ window.__ModuleLoader__.load({
         })
       }, [all, query, onlyEnabled])
 
+      /**
+       * Red guidance for "no models", with the one action that can fix it.
+       *
+       * An empty list is almost always the machine, not the account: the CLI is
+       * missing or signed out, so the catalog has nothing to return. Pointing at
+       * the helper and offering to run it beats a grey sentence nobody reads.
+       */
+      const renderGuide = () => h('div', { style: css.guide },
+        h('div', { style: css.guideText }, t('noModels')),
+        h('button', {
+          style: { ...css.btn, ...css.btnAlert },
+          disabled: setupRunning,
+          onClick: () => void startCliSetup('configure'),
+        }, t('cliRun')),
+      )
+
       if (models === undefined) {
         return h('div', { style: css.page },
           h('h2', { style: css.h2 }, t('title')),
@@ -511,6 +552,7 @@ window.__ModuleLoader__.load({
             : h('div', null,
                 h('div', { style: css.err }, `${t('loadFailed')}：${error}`),
                 h('button', { style: { ...css.btn, marginTop: '8px' }, onClick: () => void load(true) }, t('retry')),
+                h('div', { style: { marginTop: '10px' } }, renderGuide()),
               ),
         )
       }
@@ -599,7 +641,7 @@ window.__ModuleLoader__.load({
         ),
 
         all.length === 0
-          ? h('div', { style: css.note }, t('noModels'))
+          ? renderGuide()
           : h('div', { style: css.list }, rows.length > 0 ? rows : h('div', { style: { ...css.note, padding: '12px 14px' } }, '—')),
 
         all.length > 0 ? h('div', { style: css.note }, t('windowWarn')) : null,
@@ -611,7 +653,10 @@ window.__ModuleLoader__.load({
           h('div', { style: css.note }, t('cliHint')),
           h('div', { style: { ...css.bar, flexWrap: 'nowrap' } },
             h('button', { style: css.btn, disabled: setupRunning, onClick: () => void startCliSetup('configure') }, t('cliRun')),
-            h('button', { style: css.btn, disabled: setupRunning, onClick: () => void startCliSetup('check') }, t('cliCheck')),
+            h('button', { style: css.btn, disabled: setupRunning, onClick: () => void startCliSetup('login') }, t('cliLogin')),
+            setupLines.length > 0 && !setupRunning
+              ? h('button', { style: css.btn, onClick: () => setLogOpen(value => !value) }, logOpen ? t('cliHideLog') : t('cliShowLog'))
+              : null,
             h('span', { style: css.count }, setupRunning
               ? t('cliRunning')
               : setupError !== undefined
@@ -622,7 +667,7 @@ window.__ModuleLoader__.load({
                     ? ''
                     : `${t('cliExitFail')} ${setupCode}`),
           ),
-          setupLines.length > 0
+          logOpen && setupLines.length > 0
             ? h('pre', { ref: logRef, style: css.log }, setupLines.join('\n'))
             : null,
         ),

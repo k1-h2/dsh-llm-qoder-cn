@@ -23,9 +23,9 @@ describe('setup helper', () => {
   })
 
   it('accepts only the two modes it can name a flag for', () => {
-    expect(isSetupMode('check')).toBe(true)
     expect(isSetupMode('configure')).toBe(true)
-    for (const value of [undefined, null, '', 'CHECK', '--check', 'install && calc', {}]) {
+    expect(isSetupMode('login')).toBe(true)
+    for (const value of [undefined, null, '', 'CONFIGURE', '--gui', 'check', '--check', 'install && calc', {}]) {
       expect(isSetupMode(value)).toBe(false)
     }
   })
@@ -39,7 +39,7 @@ describe('setup helper', () => {
 
   const windows = process.platform === 'win32'
   it(windows ? 'runs the batch file and reports its output' : 'refuses to run off Windows', async () => {
-    const started = startSetup('check')
+    const started = startSetup('configure')
     if (!windows) {
       expect(started).toMatchObject({ started: false, reason: 'unsupported' })
       return
@@ -47,7 +47,7 @@ describe('setup helper', () => {
     expect(started.started).toBe(true)
 
     // A second request must be refused while the first one is still alive.
-    expect(startSetup('check')).toMatchObject({ started: false, reason: 'busy' })
+    expect(startSetup('configure')).toMatchObject({ started: false, reason: 'busy' })
 
     const deadline = Date.now() + 120_000
     while (readSetupStatus().running && Date.now() < deadline) {

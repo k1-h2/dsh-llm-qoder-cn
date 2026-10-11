@@ -10,7 +10,7 @@
  *
  * Nothing user-supplied reaches the command line: the mode is an allow-list of
  * two keys mapped to two literal flags, and the script path comes from this
- * package's own layout. The helper is idempotent, so a second click re-checks
+ * package's own layout. The helper is idempotent, so a second press re-checks
  * rather than reinstalling.
  *
  * @module dsh-qoder-link/setup
@@ -26,18 +26,18 @@ import { TextDecoder } from 'node:util'
 /** File name of the helper, shipped under this package's `scripts/` directory. */
 export const SCRIPT_NAME = 'setup-qoderclicn.bat'
 
-/** What the page may ask for: verify only, or install + sign in. */
-export type SetupMode = 'check' | 'configure'
+/** What the page may ask for: install and sign in, or only sign in again. */
+export type SetupMode = 'configure' | 'login'
 
 /** The one command-line flag each mode maps to. Never a user-supplied string. */
 const FLAGS: Record<SetupMode, string> = {
-  check: '--check',
   configure: '--gui',
+  login: '--login',
 }
 
 /** Whether a value is one of the two modes the page may request. */
 export function isSetupMode(value: unknown): value is SetupMode {
-  return value === 'check' || value === 'configure'
+  return value === 'configure' || value === 'login'
 }
 
 /** Cap on kept output, so a chatty `npm install` cannot grow without bound. */

@@ -10,15 +10,15 @@
  *
  * Nothing user-supplied reaches the command line: the mode is an allow-list of
  * two keys mapped to two literal flags, and the script path comes from this
- * package's own layout. The helper is idempotent, so a second click re-checks
+ * package's own layout. The helper is idempotent, so a second press re-checks
  * rather than reinstalling.
  *
  * @module dsh-qoder-link/setup
  */
 /** File name of the helper, shipped under this package's `scripts/` directory. */
 export declare const SCRIPT_NAME = "setup-qoderclicn.bat";
-/** What the page may ask for: verify only, or install + sign in. */
-export type SetupMode = 'check' | 'configure';
+/** What the page may ask for: install and sign in, or only sign in again. */
+export type SetupMode = 'configure' | 'login';
 /** Whether a value is one of the two modes the page may request. */
 export declare function isSetupMode(value: unknown): value is SetupMode;
 /** Snapshot the page polls. Always safe to render; empty before the first run. */

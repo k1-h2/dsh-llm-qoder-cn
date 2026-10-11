@@ -19,6 +19,8 @@ import type {
 import { createSdkMcpServer, qodercliAuth, query } from '@qodercn-ai/qodercn-agent-sdk'
 import type { CanUseTool, Query } from '@qodercn-ai/qodercn-agent-sdk'
 import { jsonSchemaToShape } from './jsonschema.ts'
+import type { Live } from './live.ts'
+import { readLive } from './live.ts'
 import { feedImageRefs, feedTextLength, renderIdentityAppend, renderInitialFeed } from './render.ts'
 
 /** MCP server name this adapter exposes host tools under. */
@@ -30,23 +32,32 @@ const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`
 const DEFAULT_TOOL_RESULT_TIMEOUT_MS = 120_000
 /** How long the inner process gets to acknowledge an abort before the turn is force-ended. */
 const DEFAULT_ABORT_GRACE_MS = 5_000
+/** Warm sessions kept alive when the deployment names no cap. */
+export const DEFAULT_MAX_SESSIONS = 8
+/** Inner turns allowed for one side-channel (title, compaction) request. */
+const DEFAULT_COLD_MAX_TURNS = 4
 
 /**
  * Runtime knobs shared by every warm session a manager owns. Populated from the
  * plugin's resolved config, so the settings page is the single place these are
  * decided.
+ *
+ * Each value may be a {@link Live} thunk and is resolved when a session is
+ * created, not when the manager is: a settings edit therefore applies to the
+ * sessions opened after it, while a conversation already in flight keeps the
+ * knobs it started with.
  */
 export interface SessionRuntimeOptions {
   /** How long an MCP tool handler waits for the host tool result. */
-  toolResultTimeoutMs?: number
+  toolResultTimeoutMs?: Live<number>
   /** How long the inner process gets to acknowledge an abort. */
-  abortGraceMs?: number
+  abortGraceMs?: Live<number>
   /**
    * Prepend the identity block to the host system prompt. Off by default: the
    * block instructs the inner model to deny being Qoder, which is a deliberate
    * product choice rather than a neutral default.
    */
-  identityOverride?: boolean
+  identityOverride?: Live<boolean>
 }
 
 /**
@@ -284,7 +295,7 @@ export class QoderSession {
    */
   private estimatedInputTokens: number | undefined
 
-  /** Per-session runtime knobs resolved from the plugin config. */
+  /** Per-session runtime knobs, resolved from the plugin config at creation. */
   private readonly toolResultTimeoutMs: number
   private readonly abortGraceMs: number
   private readonly identityOverride: boolean
@@ -295,9 +306,9 @@ export class QoderSession {
     runtime: SessionRuntimeOptions = {},
   ) {
     this.model = initialModel
-    this.toolResultTimeoutMs = runtime.toolResultTimeoutMs ?? DEFAULT_TOOL_RESULT_TIMEOUT_MS
-    this.abortGraceMs = runtime.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS
-    this.identityOverride = runtime.identityOverride === true
+    this.toolResultTimeoutMs = readLive(runtime.toolResultTimeoutMs, DEFAULT_TOOL_RESULT_TIMEOUT_MS)
+    this.abortGraceMs = readLive(runtime.abortGraceMs, DEFAULT_ABORT_GRACE_MS)
+    this.identityOverride = readLive(runtime.identityOverride, false) === true
   }
 
   /** Spawn the inner process (first stream only) and attach the consumer. */
@@ -846,9 +857,14 @@ export function classifyTurnError(detail: string): string {
 export class QoderSessionManager {
   private readonly sessions = new Map<string, QoderSession>()
 
+  /**
+   * @param maxSessions - warm-session cap; read per eviction so a settings edit
+   *   applies to the next session that overflows the pool.
+   * @param runtime - per-session knobs, resolved when each session is created.
+   */
   constructor(
-    readonly maxSessions = 8,
-    private readonly runtime: SessionRuntimeOptions & { coldMaxTurns?: number } = {},
+    readonly maxSessions: Live<number> = DEFAULT_MAX_SESSIONS,
+    private readonly runtime: SessionRuntimeOptions & { coldMaxTurns?: Live<number> } = {},
   ) {}
 
   /** Existing or fresh warm session for one host session id. */
@@ -861,7 +877,8 @@ export class QoderSessionManager {
     }
     const session = new QoderSession(sessionId, model, this.runtime)
     this.sessions.set(sessionId, session)
-    while (this.sessions.size > this.maxSessions) {
+    const cap = readLive(this.maxSessions, DEFAULT_MAX_SESSIONS)
+    while (this.sessions.size > cap) {
       const oldest = this.sessions.keys().next()
       if (oldest.done === true) break
       const victim = this.sessions.get(oldest.value)
@@ -888,7 +905,7 @@ export class QoderSessionManager {
   async *coldStream(options: GenerateOptions, prompt: string, model?: string): AsyncGenerator<StreamChunk> {
     // The cold path never goes through `setSystem`, so the identity block is
     // applied here when the deployment asked for it.
-    const systemPrompt = this.runtime.identityOverride === true
+    const systemPrompt = readLive(this.runtime.identityOverride, false) === true
       ? renderIdentityAppend(options.system)
       : options.system
     const q = query({
@@ -899,7 +916,7 @@ export class QoderSessionManager {
         allowedTools: [],
         canUseTool: gateTools as CanUseTool,
         settingSources: [],
-        maxTurns: this.runtime.coldMaxTurns ?? 4,
+        maxTurns: readLive(this.runtime.coldMaxTurns, DEFAULT_COLD_MAX_TURNS),
         ...systemPrompt === undefined ? {} : { systemPrompt },
         ...model === undefined ? {} : { model },
       },

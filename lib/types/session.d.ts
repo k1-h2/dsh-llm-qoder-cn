@@ -8,24 +8,32 @@
  * @module dsh-llm-qoder/session
  */
 import type { ContentBlock, GenerateOptions, RequestMessage, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm';
+import type { Live } from './live.ts';
 /** MCP server name this adapter exposes host tools under. */
 export declare const MCP_SERVER_NAME = "dsh-host";
+/** Warm sessions kept alive when the deployment names no cap. */
+export declare const DEFAULT_MAX_SESSIONS = 8;
 /**
  * Runtime knobs shared by every warm session a manager owns. Populated from the
  * plugin's resolved config, so the settings page is the single place these are
  * decided.
+ *
+ * Each value may be a {@link Live} thunk and is resolved when a session is
+ * created, not when the manager is: a settings edit therefore applies to the
+ * sessions opened after it, while a conversation already in flight keeps the
+ * knobs it started with.
  */
 export interface SessionRuntimeOptions {
     /** How long an MCP tool handler waits for the host tool result. */
-    toolResultTimeoutMs?: number;
+    toolResultTimeoutMs?: Live<number>;
     /** How long the inner process gets to acknowledge an abort. */
-    abortGraceMs?: number;
+    abortGraceMs?: Live<number>;
     /**
      * Prepend the identity block to the host system prompt. Off by default: the
      * block instructs the inner model to deny being Qoder, which is a deliberate
      * product choice rather than a neutral default.
      */
-    identityOverride?: boolean;
+    identityOverride?: Live<boolean>;
 }
 /**
  * One user-turn content block on the streaming-input channel. Text is the
@@ -143,7 +151,7 @@ export declare class QoderSession {
      * context meter would read ~0% and auto-compaction would never trigger.
      */
     private estimatedInputTokens;
-    /** Per-session runtime knobs resolved from the plugin config. */
+    /** Per-session runtime knobs, resolved from the plugin config at creation. */
     private readonly toolResultTimeoutMs;
     private readonly abortGraceMs;
     private readonly identityOverride;
@@ -241,11 +249,16 @@ export declare function classifyTurnError(detail: string): string;
  * one-shot path for side-channel requests (titles, compaction).
  */
 export declare class QoderSessionManager {
-    readonly maxSessions: number;
+    readonly maxSessions: Live<number>;
     private readonly runtime;
     private readonly sessions;
-    constructor(maxSessions?: number, runtime?: SessionRuntimeOptions & {
-        coldMaxTurns?: number;
+    /**
+     * @param maxSessions - warm-session cap; read per eviction so a settings edit
+     *   applies to the next session that overflows the pool.
+     * @param runtime - per-session knobs, resolved when each session is created.
+     */
+    constructor(maxSessions?: Live<number>, runtime?: SessionRuntimeOptions & {
+        coldMaxTurns?: Live<number>;
     });
     /** Existing or fresh warm session for one host session id. */
     forSession(sessionId: string, model: string): QoderSession;

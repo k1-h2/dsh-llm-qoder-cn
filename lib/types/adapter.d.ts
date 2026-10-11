@@ -10,6 +10,7 @@
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmProviderInfo, LlmResolvedModelInfo, PreparedAdapterCall, RequestMessage, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
+import type { Live } from './live.ts';
 import { QoderModelCatalog } from './models.ts';
 import type { Feed } from './render.ts';
 /**
@@ -21,43 +22,51 @@ export type ImageRequestReader = (ref: ImageAttachmentRef, signal?: AbortSignal)
     bytes: Uint8Array;
     mediaType: string;
 } | undefined>;
-/** Options for {@link QoderAdapter}. */
+/**
+ * Options for {@link QoderAdapter}.
+ *
+ * Most values are {@link Live}: a plain value, or a thunk the adapter calls
+ * where it uses the option. The plugin passes thunks over its volatile config
+ * cells, because a settings edit is committed in place without restarting the
+ * plugin (`src/live.ts`) — an adapter that copied these into fields would keep
+ * serving the values it was constructed with.
+ */
 export interface QoderAdapterOptions {
     /** Maximum simultaneously warm inner sessions (default 8). */
-    maxSessions?: number;
+    maxSessions?: Live<number>;
     /** How long a fetched CLI model catalog stays fresh (default 5 min). */
-    modelCacheTtlMs?: number;
+    modelCacheTtlMs?: Live<number>;
     /** Request-image reader; absent → images are never forwarded as pixels. */
     readImage?: ImageRequestReader;
     /** How long an MCP tool handler waits for the host tool result. */
-    toolResultTimeoutMs?: number;
+    toolResultTimeoutMs?: Live<number>;
     /** How long the inner process gets to acknowledge an abort. */
-    abortGraceMs?: number;
+    abortGraceMs?: Live<number>;
     /** Maximum inner turns for one side-channel request. */
-    coldMaxTurns?: number;
+    coldMaxTurns?: Live<number>;
     /** How long one CLI catalog fetch may take before the static fallback. */
-    catalogFetchTimeoutMs?: number;
+    catalogFetchTimeoutMs?: Live<number>;
     /** Whether custom models keep their own route or merge into the main one. */
-    byokRoute?: 'separate' | 'inline';
+    byokRoute?: Live<'separate' | 'inline'>;
     /**
      * Per-model context window in tokens, keyed by Qoder model id. A model with
      * no entry uses the window upstream declares for it.
      */
-    modelContextWindows?: Readonly<Record<string, number>>;
+    modelContextWindows?: Live<Readonly<Record<string, number>>>;
     /** Output-token cap assumed when a model reports none. */
-    defaultMaxTokens?: number;
+    defaultMaxTokens?: Live<number>;
     /** Model ids switched off; hidden from the picker. */
-    disabledModels?: readonly string[];
+    disabledModels?: Live<readonly string[]>;
     /** Extra harness-id → Qoder-id aliases, merged over the built-in ones. */
-    modelAliases?: Readonly<Record<string, string>>;
+    modelAliases?: Live<Readonly<Record<string, string>>>;
     /** Reasoning effort used when a request names none. */
-    defaultReasoningEffort?: string;
+    defaultReasoningEffort?: Live<string | undefined>;
     /** Display name of the primary provider group. */
-    displayName?: string;
+    displayName?: Live<string>;
     /** Display name of the group holding the account's custom models. */
-    byokDisplayName?: string;
+    byokDisplayName?: Live<string>;
     /** Prepend the identity block to the inner system prompt. */
-    identityOverride?: boolean;
+    identityOverride?: Live<boolean>;
 }
 /** The primary provider route (the qoder account's built-in models). */
 export declare const QODER_PROVIDER = "qoder-cn";
@@ -96,18 +105,34 @@ export declare function reasoningInfo(efforts: readonly string[] | undefined, de
  * planning live here; chunk synthesis lives in the session's consumer.
  */
 export declare class QoderAdapter extends LlmAdapter {
+    /**
+     * The options as given, read where they are used rather than copied here.
+     *
+     * A `.volatile()` field is a live cell DSH updates in place, and such an edit
+     * does not restart the plugin, so a value captured in the constructor would
+     * stay frozen for the lifetime of the process (see `src/live.ts`).
+     */
+    private readonly options;
     private readonly sessions;
     private readonly catalog;
     private readonly readImage;
-    private readonly defaultMaxTokens;
-    private readonly modelContextWindows;
-    private readonly disabledModels;
-    private readonly modelAliases;
-    private readonly defaultReasoningEffort;
-    private readonly displayName;
-    private readonly byokDisplayName;
-    private readonly byokRoute;
+    /**
+     * Memoized `Set` view of the disabled-model list.
+     *
+     * `updateVolatile` stores the freshly parsed array, so identity changes only
+     * when the value does: caching on that identity keeps the per-model lookup a
+     * hash probe instead of rebuilding a set per call, with no staleness.
+     */
+    private disabledCache;
     constructor(options?: QoderAdapterOptions);
+    private get byokRoute();
+    private get defaultMaxTokens();
+    private get modelContextWindows();
+    private get disabledModels();
+    private get modelAliases();
+    private get defaultReasoningEffort();
+    private get displayName();
+    private get byokDisplayName();
     providerInfo(provider: string): LlmProviderInfo;
     /**
      * Whether one catalog entry is enabled for the picker.

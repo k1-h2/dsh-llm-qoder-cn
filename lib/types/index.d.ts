@@ -10,6 +10,16 @@
  * window, timeouts, model allow/deny lists, aliases — is declared in
  * {@link Config}, which DSH renders as this plugin's settings page.
  *
+ * ## Settings edits apply without a restart, and that shapes this module
+ *
+ * Every config field is volatile, and DSH commits a volatile-only edit into the
+ * running plugin's config cells instead of restarting it — `apply()` is not
+ * called again. The adapter is therefore handed {@link liveConfig} thunks and
+ * reads each value where it uses it; the only things captured at mount are the
+ * two registrations (`providersFor` / `directoryFor`), which are republished
+ * through their `replace` handles when a field that decides a shape changes.
+ * See `src/live.ts` for the mechanism.
+ *
  * @module dsh-llm-qoder-cn
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -35,6 +45,20 @@ declare module '@deepseek-ai/cordis' {
         /** Present only in web compositions; reached through a nested inject. */
         webServer?: WebServerService;
     }
+    interface Events {
+        /**
+         * The loader committed a volatile-only config edit into this fiber.
+         *
+         * Emitted by `cordis-plugin-loader` from `Entry._commitVolatile` with the
+         * config paths whose cells changed. The plugin does not restart for such an
+         * edit, so this is the only notification that one happened; see
+         * `src/live.ts`. Declared here because it is an internal loader event that
+         * the framework's own `Events` interface does not carry.
+         *
+         * @param paths - one path array per committed field, e.g. `[['byokRoute']]`.
+         */
+        'loader/volatile-update'(paths: readonly (readonly string[])[]): void;
+    }
 }
 export { QoderAdapter, QODER_PROVIDER, QODER_BYOK_PROVIDER, pickContextWindow } from './adapter.ts';
 export type { ImageRequestReader, QoderAdapterOptions } from './adapter.ts';
@@ -43,8 +67,10 @@ export type { SessionRuntimeOptions } from './session.ts';
 export { QODER_MODELS, MODEL_ALIASES, resolveQoderModelId, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from './catalog.ts';
 export { QoderModelCatalog, priceFactorOf } from './models.ts';
 export { API_PREFIX, buildRows, handleApi } from './api.ts';
-export { BYOK_ROUTES, BYOK_ROUTE_NAMES, resolveConfig } from './config.ts';
-export type { Config as ConfigShape, ParsedConfig, ResolvedConfig, ByokRoute, } from './config.ts';
+export type { Live } from './live.ts';
+export { readLive, readLiveOptional } from './live.ts';
+export { BYOK_ROUTES, BYOK_ROUTE_NAMES, liveConfig, resolveConfig } from './config.ts';
+export type { Config as ConfigShape, LiveConfig, ParsedConfig, ResolvedConfig, ByokRoute, } from './config.ts';
 /** Cordis plugin name; must match the `id` used by `cordis.patch.yml`. */
 export declare const name = "llm-qoder-cn";
 /** The LLM registry must exist before an adapter can be registered on it. */

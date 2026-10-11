@@ -132,10 +132,20 @@ export interface Config {
  * correctly, and still shows no settings page anywhere — the namespace never
  * reaches the wire.
  *
- * `.volatile()` also declares the intended semantics: the value is a stable
- * reference holding immutable data, and edits apply live. That is exactly how
- * this plugin consumes its config — the adapter reads it at mount, and every
- * field is a plain scalar, list, or map.
+ * ## What `.volatile()` costs: read every field at use
+ *
+ * A volatile-only edit does not restart the plugin. The loader writes the new
+ * value into the *same* `Volatile` cell the running plugin already holds and
+ * skips the rest of the update lifecycle, so `apply()` is never called again
+ * (`Entry.update` → `_commitVolatile` in `cordis-plugin-loader`). Capturing a
+ * field in `apply()` therefore freezes it for the lifetime of the process, and
+ * the plugin answers with mount-time values while the settings page and the
+ * profile patch on disk show the new ones.
+ *
+ * That is why the whole plugin consumes its config through {@link liveConfig},
+ * which returns a thunk per field: the value is unwrapped from its volatile
+ * reference at every read, so an in-place edit is visible immediately. See
+ * `src/live.ts` for the full mechanism.
  */
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     disabledModels: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
@@ -200,11 +210,34 @@ export type ParsedConfig = {
     readonly [K in keyof Config]?: unknown;
 };
 /**
+ * {@link ResolvedConfig} with every field as a thunk over its live value.
+ *
+ * Structurally a resolved config, temporally a subscription: each property
+ * reads the underlying `Volatile` cell when it is called, so a settings edit
+ * that the loader commits in place is visible on the next read.
+ */
+export type LiveConfig = {
+    readonly [K in keyof ResolvedConfig]: () => ResolvedConfig[K];
+};
+/**
+ * Wrap a parsed config as {@link LiveConfig}.
+ *
+ * Every normalizer {@link resolveConfig} applies is applied here too — the live
+ * wrapper is the same interpretation of the same raw fields, just deferred —
+ * and `resolveConfig` is implemented on top of it, so the two can never
+ * disagree about what a given input means.
+ *
+ * @param config - the parsed plugin config, possibly partial or absent.
+ * @returns one thunk per resolved field, each reading the live cell.
+ */
+export declare function liveConfig(config: ParsedConfig | undefined): LiveConfig;
+/**
  * Apply defaults to a parsed config.
  *
- * `apply()` receives whatever the loader composed, which for a profile row with
- * no explicit `config:` block is `{}`. Volatile fields arrive as references, so
- * they are unwrapped first; the rest of the plugin then works with plain values.
+ * A one-shot snapshot of {@link liveConfig}, for a caller that genuinely wants
+ * the values as they are right now (a report, a test) rather than a view that
+ * keeps following edits. The running plugin does not use it: every option it
+ * hands downstream is a thunk, so a volatile edit is never missed.
  *
  * @param config - the parsed plugin config, possibly partial.
  * @returns the same values with every default filled in.

@@ -144,10 +144,20 @@ export interface Config {
  * correctly, and still shows no settings page anywhere — the namespace never
  * reaches the wire.
  *
- * `.volatile()` also declares the intended semantics: the value is a stable
- * reference holding immutable data, and edits apply live. That is exactly how
- * this plugin consumes its config — the adapter reads it at mount, and every
- * field is a plain scalar, list, or map.
+ * ## What `.volatile()` costs: read every field at use
+ *
+ * A volatile-only edit does not restart the plugin. The loader writes the new
+ * value into the *same* `Volatile` cell the running plugin already holds and
+ * skips the rest of the update lifecycle, so `apply()` is never called again
+ * (`Entry.update` → `_commitVolatile` in `cordis-plugin-loader`). Capturing a
+ * field in `apply()` therefore freezes it for the lifetime of the process, and
+ * the plugin answers with mount-time values while the settings page and the
+ * profile patch on disk show the new ones.
+ *
+ * That is why the whole plugin consumes its config through {@link liveConfig},
+ * which returns a thunk per field: the value is unwrapped from its volatile
+ * reference at every read, so an in-place edit is visible immediately. See
+ * `src/live.ts` for the full mechanism.
  */
 export const Config = z.object({
   // ── Models: the only settings most users touch ──────────────────────────
@@ -203,54 +213,93 @@ export interface ResolvedConfig {
 export type ParsedConfig = { readonly [K in keyof Config]?: unknown }
 
 /**
+ * {@link ResolvedConfig} with every field as a thunk over its live value.
+ *
+ * Structurally a resolved config, temporally a subscription: each property
+ * reads the underlying `Volatile` cell when it is called, so a settings edit
+ * that the loader commits in place is visible on the next read.
+ */
+export type LiveConfig = { readonly [K in keyof ResolvedConfig]: () => ResolvedConfig[K] }
+
+/**
+ * Wrap a parsed config as {@link LiveConfig}.
+ *
+ * Every normalizer {@link resolveConfig} applies is applied here too — the live
+ * wrapper is the same interpretation of the same raw fields, just deferred —
+ * and `resolveConfig` is implemented on top of it, so the two can never
+ * disagree about what a given input means.
+ *
+ * @param config - the parsed plugin config, possibly partial or absent.
+ * @returns one thunk per resolved field, each reading the live cell.
+ */
+export function liveConfig(config: ParsedConfig | undefined): LiveConfig {
+  const source = (config ?? {}) as Record<string, unknown>
+
+  /**
+   * One field's current value.
+   *
+   * The volatile unwrap happens on every call rather than once, which is the
+   * entire point: the reference object outlives an edit, only its contents
+   * change.
+   */
+  const field = (key: keyof Config): unknown => {
+    const value = source[key]
+    return isVolatile(value) ? value.get() : value
+  }
+
+  return {
+    displayName: () => nonEmpty(field('displayName'), 'Qoder CN'),
+    byokDisplayName: () => nonEmpty(field('byokDisplayName'), 'Qoder CN 自定义'),
+    byokRoute: () => field('byokRoute') === 'inline' ? 'inline' : 'separate',
+    maxSessions: () => positive(field('maxSessions'), 8),
+    modelCacheTtlMs: () => positive(field('modelCacheTtlSeconds'), 300) * 1_000,
+    defaultMaxTokens: () => positive(field('defaultMaxTokens'), 32_000),
+    toolResultTimeoutMs: () => positive(field('toolResultTimeoutSeconds'), 120) * 1_000,
+    catalogFetchTimeoutMs: () => positive(field('catalogFetchTimeoutSeconds'), 20) * 1_000,
+    abortGraceMs: () => positive(field('abortGraceSeconds'), 5) * 1_000,
+    coldMaxTurns: () => positive(field('coldMaxTurns'), 4),
+    disabledModels: () => stringList(field('disabledModels')),
+    modelContextWindows: () => numberMap(field('modelContextWindows')),
+    modelAliases: () => stringMap(field('modelAliases')),
+    identityOverride: () => field('identityOverride') === true,
+    defaultReasoningEffort: () => {
+      const raw = field('defaultReasoningEffort')
+      const effort = typeof raw === 'string' ? raw.trim() : ''
+      return effort.length > 0 ? effort : undefined
+    },
+  }
+}
+
+/**
  * Apply defaults to a parsed config.
  *
- * `apply()` receives whatever the loader composed, which for a profile row with
- * no explicit `config:` block is `{}`. Volatile fields arrive as references, so
- * they are unwrapped first; the rest of the plugin then works with plain values.
+ * A one-shot snapshot of {@link liveConfig}, for a caller that genuinely wants
+ * the values as they are right now (a report, a test) rather than a view that
+ * keeps following edits. The running plugin does not use it: every option it
+ * hands downstream is a thunk, so a volatile edit is never missed.
  *
  * @param config - the parsed plugin config, possibly partial.
  * @returns the same values with every default filled in.
  */
 export function resolveConfig(config: ParsedConfig | undefined): ResolvedConfig {
-  const raw = unwrap(config ?? {})
-  const byok = raw.byokRoute === 'inline' ? 'inline' : 'separate'
-  const effort = typeof raw.defaultReasoningEffort === 'string' ? raw.defaultReasoningEffort.trim() : ''
+  const live = liveConfig(config)
   return {
-    displayName: nonEmpty(raw.displayName, 'Qoder CN'),
-    byokDisplayName: nonEmpty(raw.byokDisplayName, 'Qoder CN 自定义'),
-    byokRoute: byok,
-    maxSessions: positive(raw.maxSessions, 8),
-    modelCacheTtlMs: positive(raw.modelCacheTtlSeconds, 300) * 1_000,
-    defaultMaxTokens: positive(raw.defaultMaxTokens, 32_000),
-    toolResultTimeoutMs: positive(raw.toolResultTimeoutSeconds, 120) * 1_000,
-    catalogFetchTimeoutMs: positive(raw.catalogFetchTimeoutSeconds, 20) * 1_000,
-    abortGraceMs: positive(raw.abortGraceSeconds, 5) * 1_000,
-    coldMaxTurns: positive(raw.coldMaxTurns, 4),
-    disabledModels: stringList(raw.disabledModels),
-    modelContextWindows: numberMap(raw.modelContextWindows),
-    modelAliases: stringMap(raw.modelAliases),
-    identityOverride: raw.identityOverride === true,
-    defaultReasoningEffort: effort.length > 0 ? effort : undefined,
+    displayName: live.displayName(),
+    byokDisplayName: live.byokDisplayName(),
+    byokRoute: live.byokRoute(),
+    maxSessions: live.maxSessions(),
+    modelCacheTtlMs: live.modelCacheTtlMs(),
+    defaultMaxTokens: live.defaultMaxTokens(),
+    toolResultTimeoutMs: live.toolResultTimeoutMs(),
+    catalogFetchTimeoutMs: live.catalogFetchTimeoutMs(),
+    abortGraceMs: live.abortGraceMs(),
+    coldMaxTurns: live.coldMaxTurns(),
+    disabledModels: live.disabledModels(),
+    modelContextWindows: live.modelContextWindows(),
+    modelAliases: live.modelAliases(),
+    identityOverride: live.identityOverride(),
+    defaultReasoningEffort: live.defaultReasoningEffort(),
   }
-}
-
-/**
- * Flatten the `Volatile<T>` references a `.volatile()` schema produces.
- *
- * A volatile field arrives as `{ get(): T }` rather than `T`, so every read has
- * to go through `get()`. Doing it once here keeps the rest of the plugin typed
- * against plain values, which is the same shape upstream adapters consume.
- *
- * @param config - parsed plugin config, whose fields may be volatile references.
- * @returns the same fields as plain values.
- */
-function unwrap(config: ParsedConfig): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(config)) {
-    out[key] = isVolatile(value) ? value.get() : value
-  }
-  return out
 }
 
 function nonEmpty(value: unknown, fallback: string): string {

@@ -8,6 +8,7 @@
  */
 import type { ModelInfo } from '@qodercn-ai/qodercn-agent-sdk';
 import type { QoderCatalogModel } from './catalog.ts';
+import type { Live } from './live.ts';
 /** How long a fetched catalog stays fresh by default. */
 export declare const DEFAULT_MODEL_CACHE_TTL_MS: number;
 /** Give up on one CLI catalog fetch after this long by default. */
@@ -20,10 +21,11 @@ export declare class QoderModelCatalog {
     private inflight;
     /**
      * @param ttlMs - how long a fetched catalog stays fresh before a re-fetch.
+     *   Read per use, so a settings edit takes effect on the next read.
      * @param fetchTimeoutMs - how long one CLI catalog fetch may take before the
      *   static fallback takes over.
      */
-    constructor(ttlMs: number, fetchTimeoutMs?: number);
+    constructor(ttlMs: Live<number>, fetchTimeoutMs?: Live<number>);
     /** Raw live entries; the stale snapshot when a refresh fails, else nothing. */
     liveModels(): Promise<readonly ModelInfo[]>;
     /** dsh catalog entries: the enabled live list, or the static fallback. */

@@ -18,10 +18,12 @@ import {
   DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, QODER_MODELS, resolveQoderModelId,
 } from './catalog.ts'
 import type { ResolvedConfig } from './config.ts'
+import type { Live } from './live.ts'
+import { readLive, readLiveOptional } from './live.ts'
 import { DEFAULT_MODEL_CACHE_TTL_MS, DEFAULT_FETCH_TIMEOUT_MS, QoderModelCatalog } from './models.ts'
 import { feedImageRefs, feedToText, imageRefs, joinFeeds, renderInitialFeed, renderRefreshed, renderUserTurn } from './render.ts'
 import type { Feed } from './render.ts'
-import { QoderSession, QoderSessionManager } from './session.ts'
+import { QoderSession, QoderSessionManager, DEFAULT_MAX_SESSIONS } from './session.ts'
 import type { ChannelContent, ResolvedImages } from './session.ts'
 
 /**
@@ -34,44 +36,57 @@ export type ImageRequestReader = (
   signal?: AbortSignal,
 ) => Promise<{ bytes: Uint8Array, mediaType: string } | undefined>
 
-/** Options for {@link QoderAdapter}. */
+/**
+ * Options for {@link QoderAdapter}.
+ *
+ * Most values are {@link Live}: a plain value, or a thunk the adapter calls
+ * where it uses the option. The plugin passes thunks over its volatile config
+ * cells, because a settings edit is committed in place without restarting the
+ * plugin (`src/live.ts`) — an adapter that copied these into fields would keep
+ * serving the values it was constructed with.
+ */
 export interface QoderAdapterOptions {
   /** Maximum simultaneously warm inner sessions (default 8). */
-  maxSessions?: number
+  maxSessions?: Live<number>
   /** How long a fetched CLI model catalog stays fresh (default 5 min). */
-  modelCacheTtlMs?: number
+  modelCacheTtlMs?: Live<number>
   /** Request-image reader; absent → images are never forwarded as pixels. */
   readImage?: ImageRequestReader
   /** How long an MCP tool handler waits for the host tool result. */
-  toolResultTimeoutMs?: number
+  toolResultTimeoutMs?: Live<number>
   /** How long the inner process gets to acknowledge an abort. */
-  abortGraceMs?: number
+  abortGraceMs?: Live<number>
   /** Maximum inner turns for one side-channel request. */
-  coldMaxTurns?: number
+  coldMaxTurns?: Live<number>
   /** How long one CLI catalog fetch may take before the static fallback. */
-  catalogFetchTimeoutMs?: number
+  catalogFetchTimeoutMs?: Live<number>
   /** Whether custom models keep their own route or merge into the main one. */
-  byokRoute?: 'separate' | 'inline'
+  byokRoute?: Live<'separate' | 'inline'>
   /**
    * Per-model context window in tokens, keyed by Qoder model id. A model with
    * no entry uses the window upstream declares for it.
    */
-  modelContextWindows?: Readonly<Record<string, number>>
+  modelContextWindows?: Live<Readonly<Record<string, number>>>
   /** Output-token cap assumed when a model reports none. */
-  defaultMaxTokens?: number
+  defaultMaxTokens?: Live<number>
   /** Model ids switched off; hidden from the picker. */
-  disabledModels?: readonly string[]
+  disabledModels?: Live<readonly string[]>
   /** Extra harness-id → Qoder-id aliases, merged over the built-in ones. */
-  modelAliases?: Readonly<Record<string, string>>
+  modelAliases?: Live<Readonly<Record<string, string>>>
   /** Reasoning effort used when a request names none. */
-  defaultReasoningEffort?: string
+  defaultReasoningEffort?: Live<string | undefined>
   /** Display name of the primary provider group. */
-  displayName?: string
+  displayName?: Live<string>
   /** Display name of the group holding the account's custom models. */
-  byokDisplayName?: string
+  byokDisplayName?: Live<string>
   /** Prepend the identity block to the inner system prompt. */
-  identityOverride?: boolean
+  identityOverride?: Live<boolean>
 }
+
+/** Shared empty values, so an unset list or map allocates nothing per read. */
+const NO_MODELS: readonly string[] = []
+const NO_WINDOWS: Readonly<Record<string, number>> = {}
+const NO_ALIASES: Readonly<Record<string, string>> = {}
 
 /** The primary provider route (the qoder account's built-in models). */
 export const QODER_PROVIDER = 'qoder-cn'
@@ -176,21 +191,30 @@ interface CallGeneration {
  * planning live here; chunk synthesis lives in the session's consumer.
  */
 export class QoderAdapter extends LlmAdapter {
+  /**
+   * The options as given, read where they are used rather than copied here.
+   *
+   * A `.volatile()` field is a live cell DSH updates in place, and such an edit
+   * does not restart the plugin, so a value captured in the constructor would
+   * stay frozen for the lifetime of the process (see `src/live.ts`).
+   */
+  private readonly options: QoderAdapterOptions
   private readonly sessions: QoderSessionManager
   private readonly catalog: QoderModelCatalog
   private readonly readImage: ImageRequestReader | undefined
-  private readonly defaultMaxTokens: number
-  private readonly modelContextWindows: Readonly<Record<string, number>>
-  private readonly disabledModels: ReadonlySet<string>
-  private readonly modelAliases: Readonly<Record<string, string>>
-  private readonly defaultReasoningEffort: string | undefined
-  private readonly displayName: string
-  private readonly byokDisplayName: string
-  private readonly byokRoute: 'separate' | 'inline'
+  /**
+   * Memoized `Set` view of the disabled-model list.
+   *
+   * `updateVolatile` stores the freshly parsed array, so identity changes only
+   * when the value does: caching on that identity keeps the per-model lookup a
+   * hash probe instead of rebuilding a set per call, with no staleness.
+   */
+  private disabledCache: { source: readonly string[], set: ReadonlySet<string> } | undefined
 
   constructor(options: QoderAdapterOptions = {}) {
     super()
-    this.sessions = new QoderSessionManager(options.maxSessions ?? 8, {
+    this.options = options
+    this.sessions = new QoderSessionManager(options.maxSessions ?? DEFAULT_MAX_SESSIONS, {
       toolResultTimeoutMs: options.toolResultTimeoutMs,
       abortGraceMs: options.abortGraceMs,
       coldMaxTurns: options.coldMaxTurns,
@@ -201,14 +225,43 @@ export class QoderAdapter extends LlmAdapter {
       options.catalogFetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
     )
     this.readImage = options.readImage
-    this.byokRoute = options.byokRoute ?? 'separate'
-    this.defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS
-    this.modelContextWindows = options.modelContextWindows ?? {}
-    this.disabledModels = new Set(options.disabledModels ?? [])
-    this.modelAliases = options.modelAliases ?? {}
-    this.defaultReasoningEffort = options.defaultReasoningEffort
-    this.displayName = options.displayName ?? 'Qoder CN'
-    this.byokDisplayName = options.byokDisplayName ?? 'Qoder CN 自定义'
+  }
+
+  private get byokRoute(): 'separate' | 'inline' {
+    return readLive(this.options.byokRoute, 'separate')
+  }
+
+  private get defaultMaxTokens(): number {
+    return readLive(this.options.defaultMaxTokens, DEFAULT_MAX_TOKENS)
+  }
+
+  private get modelContextWindows(): Readonly<Record<string, number>> {
+    return readLive(this.options.modelContextWindows, NO_WINDOWS)
+  }
+
+  private get disabledModels(): ReadonlySet<string> {
+    const source = readLive(this.options.disabledModels, NO_MODELS)
+    const cached = this.disabledCache
+    if (cached !== undefined && cached.source === source) return cached.set
+    const set = new Set(source)
+    this.disabledCache = { source, set }
+    return set
+  }
+
+  private get modelAliases(): Readonly<Record<string, string>> {
+    return readLive(this.options.modelAliases, NO_ALIASES)
+  }
+
+  private get defaultReasoningEffort(): string | undefined {
+    return readLiveOptional(this.options.defaultReasoningEffort)
+  }
+
+  private get displayName(): string {
+    return readLive(this.options.displayName, 'Qoder CN')
+  }
+
+  private get byokDisplayName(): string {
+    return readLive(this.options.byokDisplayName, 'Qoder CN 自定义')
   }
 
   override providerInfo(provider: string): LlmProviderInfo {

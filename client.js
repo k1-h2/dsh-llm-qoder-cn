@@ -43,6 +43,8 @@ window.__ModuleLoader__.load({
       refresh: '刷新列表',
       refreshing: '刷新中…',
       saveFailed: '保存失败',
+      notApplied: '服务器未报告这次改动，可能被其他窗口覆盖了，请刷新后重试',
+      timeout: '保存超时，请重试',
       saved: '已保存',
       saving: '保存中…',
       enabledCount: '已启用',
@@ -92,6 +94,8 @@ window.__ModuleLoader__.load({
       refresh: 'Refresh',
       refreshing: 'Refreshing…',
       saveFailed: 'Save failed',
+      notApplied: 'The host did not report this change; another window may have overwritten it. Refresh and retry.',
+      timeout: 'Save timed out; please retry',
       saved: 'Saved',
       saving: 'Saving…',
       enabledCount: 'enabled',
@@ -205,6 +209,28 @@ window.__ModuleLoader__.load({
       } finally {
         clearTimeout(timer)
       }
+    }
+
+    /**
+     * How long a settings write may take before the page gives up on it.
+     *
+     * A config write is a round trip to the host, which commits the value into
+     * the running plugin before it answers, so this is not a normal-path limit —
+     * it is a floor under the UI. Without it a wire call that never settles
+     * leaves every control disabled forever, which is exactly how this page was
+     * previously reported as frozen.
+     */
+    const WRITE_TIMEOUT_MS = 20_000
+
+    /** Settle with `promise`, or reject with `message` once `ms` elapse. */
+    function withDeadline(promise, ms, message) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(message)), ms)
+        promise.then(
+          value => { clearTimeout(timer); resolve(value) },
+          error => { clearTimeout(timer); reject(error) },
+        )
+      })
     }
 
     /**
@@ -322,17 +348,18 @@ window.__ModuleLoader__.load({
       /**
        * Re-read until the list reflects what was just written, or give up.
        *
-       * A settings write makes the host restart the plugin, so the state the
-       * route serves settles a moment after the write is accepted. Reading once
-       * can therefore return the previous state and make a successful change
-       * look ignored — the reported "can't enable anything". Retrying briefly
-       * turns that window into a short wait.
+       * The host commits a volatile config edit into the running plugin before
+       * it answers the write, so the first read after `set()` normally already
+       * shows the change and this returns immediately. The retries exist for the
+       * cases where it does not: a reload that briefly unpublished the route, or
+       * a host that answered ahead of its own commit. Spending them turns a
+       * transient disagreement into a short wait instead of a wrong answer.
        *
        * @param verify - whether the rows already show the intended change.
        * @param attempts - how many reads to try before accepting what arrived.
        * @returns the last rows read, or undefined when every read failed.
        */
-      const loadUntil = useCallback(async (verify, attempts = 8) => {
+      const loadUntil = useCallback(async (verify, attempts = 5) => {
         let rows
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
@@ -343,7 +370,7 @@ window.__ModuleLoader__.load({
           }
           setModels(rows)
           if (verify === undefined || verify(rows)) return rows
-          await new Promise(resolve => setTimeout(resolve, 150 + attempt * 120))
+          await new Promise(resolve => setTimeout(resolve, 120 + attempt * 120))
         }
         return rows
       }, [fetchModels])
@@ -361,6 +388,12 @@ window.__ModuleLoader__.load({
        * that counter, so gating there would leave `busy` set forever and every
        * control disabled.
        *
+       * The host answers only after it has committed the value, so the re-read
+       * normally confirms the change on its first attempt. `verify` therefore
+       * acts as a real check rather than a wait: if the list still disagrees
+       * once the retries are spent, the change was NOT adopted and the page says
+       * so instead of reporting a save that did nothing.
+       *
        * @param key - the config field to write.
        * @param next - the value, or undefined to clear the field.
        * @param verify - whether the re-read list already shows this change.
@@ -372,37 +405,48 @@ window.__ModuleLoader__.load({
         setError(undefined)
         try {
           const op = next === undefined ? form.unset(key) : form.set(key, next)
-          const accepted = await op
+          const accepted = await withDeadline(op, WRITE_TIMEOUT_MS, t('timeout'))
           if (accepted === false) throw new Error(t('saveFailed'))
-          await loadUntil(verify)
+          const rows = await loadUntil(verify)
+          if (rows !== undefined && verify !== undefined && !verify(rows)) throw new Error(t('notApplied'))
           if (mine === writeTicket.current) setStatus(t('saved'))
         } catch (err) {
-          if (mine === writeTicket.current) {
-            setError(`${t('saveFailed')}：${String(err?.message ?? err)}`)
-            setStatus(undefined)
-          }
+          if (mine !== writeTicket.current) return
+          setError(`${t('saveFailed')}：${String(err?.message ?? err)}`)
+          setStatus(undefined)
+          // The rows now hold an optimistic guess; re-read so the page shows what
+          // the host actually stored rather than what the click hoped for.
+          await load()
         } finally {
           if (mine === writeTicket.current) setBusy(false)
         }
-      }, [form, loadUntil, t])
+      }, [form, load, loadUntil, t])
 
       /**
        * Write the whole disabled-model list, derived from the rows the user
        * just changed, so rapid toggles cannot lose each other's edits.
+       *
+       * The row is updated locally first: the host commits the value before it
+       * answers, so the re-read confirms this instead of correcting it, and the
+       * switch never appears to snap back to where it was.
        */
       const writeDisabled = useCallback((rows, id, enabled) => {
         const next = new Set(rows.filter(m => !m.enabled).map(m => m.id))
         if (enabled) next.delete(id)
         else next.add(id)
+        setModels(current => current?.map(m => m.id === id ? { ...m, enabled } : m))
         return write('disabledModels', [...next], list => list.some(m => m.id === id && m.enabled === enabled))
       }, [write])
 
-      /** Write the whole per-model window map. */
+      /** Write the whole per-model window map, again showing the choice at once. */
       const writeWindow = useCallback((rows, id, window) => {
         const next = {}
         for (const m of rows) if (m.override !== undefined) next[m.id] = m.override
         if (window === undefined) delete next[id]
         else next[id] = window
+        setModels(current => current?.map(m => m.id === id
+          ? { ...m, override: window, contextWindow: window ?? m.defaultContextWindow }
+          : m))
         return write(
           'modelContextWindows',
           next,
@@ -410,6 +454,22 @@ window.__ModuleLoader__.load({
             && (window === undefined ? m.override === undefined : m.override === window)),
         )
       }, [write])
+
+      /**
+       * Flip every model at once.
+       *
+       * Enabling all writes an empty deny-list rather than every id, so a model
+       * the account publishes later still defaults to on.
+       */
+      const writeAll = useCallback((enabled) => {
+        const ids = (models ?? []).map(m => m.id)
+        setModels(current => current?.map(m => ({ ...m, enabled })))
+        return write(
+          'disabledModels',
+          enabled ? [] : ids,
+          list => list.every(m => m.enabled === enabled),
+        )
+      }, [models, write])
 
       const all = models ?? []
       const enabledTotal = all.filter(m => m.enabled).length
@@ -511,12 +571,12 @@ window.__ModuleLoader__.load({
           h('button', {
             style: css.btn,
             disabled: busy || all.every(m => m.enabled),
-            onClick: () => void write('disabledModels', [], list => list.every(m => m.enabled)),
+            onClick: () => void writeAll(true),
           }, t('selectAll')),
           h('button', {
             style: css.btn,
             disabled: busy || enabledTotal === 0,
-            onClick: () => void write('disabledModels', all.map(m => m.id), list => list.every(m => !m.enabled)),
+            onClick: () => void writeAll(false),
           }, t('selectNone')),
           h('span', { style: css.count }, `${t('enabledCount')} ${enabledTotal} / ${all.length}`),
         ),

@@ -11,6 +11,8 @@ import type { ModelInfo } from '@qodercn-ai/qodercn-agent-sdk'
 import { qodercliAuth, query } from '@qodercn-ai/qodercn-agent-sdk'
 import type { QoderCatalogModel } from './catalog.ts'
 import { QODER_MODELS } from './catalog.ts'
+import type { Live } from './live.ts'
+import { readLive } from './live.ts'
 
 /** How long a fetched catalog stays fresh by default. */
 export const DEFAULT_MODEL_CACHE_TTL_MS = 5 * 60_000
@@ -27,11 +29,12 @@ interface CatalogSnapshot {
  * Last successful catalog, shared by every {@link QoderModelCatalog} in this
  * process.
  *
- * A settings write makes DSH restart the plugin
- * (`fiber.update` → `restart()` → `apply()`), so the replacement adapter starts
- * with an empty cache. Without this, the very next settings read cold-starts the
- * Qoder CLI — several seconds of spinner after a click that should feel instant,
- * and the reason a change can look like it was ignored.
+ * A settings write does NOT restart this plugin — a volatile edit is committed
+ * into the running cells (see `live.ts`) — so the cache now only has to survive
+ * a real remount: enabling the plugin, a profile reload, or a DSH restart. It
+ * matters in exactly those cases, because the first settings read after the
+ * remount would otherwise cold-start the Qoder CLI and stall the page for
+ * seconds.
  *
  * The entry carries its own timestamp and is only used while it is still within
  * the requesting catalog's TTL, so normal freshness is unchanged.
@@ -45,18 +48,20 @@ export class QoderModelCatalog {
 
   /**
    * @param ttlMs - how long a fetched catalog stays fresh before a re-fetch.
+   *   Read per use, so a settings edit takes effect on the next read.
    * @param fetchTimeoutMs - how long one CLI catalog fetch may take before the
    *   static fallback takes over.
    */
   constructor(
-    private readonly ttlMs: number,
-    private readonly fetchTimeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+    private readonly ttlMs: Live<number>,
+    private readonly fetchTimeoutMs: Live<number> = DEFAULT_FETCH_TIMEOUT_MS,
   ) {}
 
   /** Raw live entries; the stale snapshot when a refresh fails, else nothing. */
   async liveModels(): Promise<readonly ModelInfo[]> {
+    const ttlMs = readLive(this.ttlMs, DEFAULT_MODEL_CACHE_TTL_MS)
     const fresh = (snapshot: CatalogSnapshot | undefined): boolean =>
-      snapshot !== undefined && Date.now() - snapshot.at < this.ttlMs
+      snapshot !== undefined && Date.now() - snapshot.at < ttlMs
     // Own cache first, then the process-wide one a previous adapter left behind.
     const cached = this.cached ?? sharedSnapshot
     if (fresh(cached) && cached !== undefined) {
@@ -97,7 +102,7 @@ export class QoderModelCatalog {
       options: { auth: qodercliAuth(), tools: [], allowedTools: [], settingSources: [], maxTurns: 1 },
     })
     try {
-      return await withTimeout(q.getAvailableModels({ fetchStrategy: 'live' }), this.fetchTimeoutMs)
+      return await withTimeout(q.getAvailableModels({ fetchStrategy: 'live' }), readLive(this.fetchTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS))
     } finally {
       await q.close().catch(() => undefined)
     }

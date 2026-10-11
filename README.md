@@ -26,13 +26,14 @@ v = zn ? { cliCommands: ["qoderclicn"], configDirName: ".qoder-cn" }
 
 前置：本机已安装并登录 Qoder CN CLI（`qoderclicn --version` 可运行）。
 
-点侧边栏的 **插件 → 添加插件**，把下面任意一个填进输入框，然后点「安装」：
+点侧边栏的 **插件 → 添加插件**，把 **`dsh-qoder-link`** 填进输入框，然后点「安装」。
 
-- `github:k1-h2/dsh-qoder-link`
-- `https://github.com/k1-h2/dsh-qoder-link`
-- 本地目录路径（装自己改过的版本时用）
+也可以换成另外两种来源：
 
-**安装源**保持默认即可，它只决定 npm 依赖从哪里下载。
+- `github:k1-h2/dsh-qoder-link`（或 `https://github.com/k1-h2/dsh-qoder-link`）——装仓库的最新提交
+- 本地目录路径——装你自己改过的版本
+
+**安装源**保持默认即可（中国大陆镜像源），它只决定插件及其 npm 依赖从哪里下载。
 
 SDK 声明了安装脚本（下载它自己的 worker runtime），pnpm 默认不执行，所以界面会弹出
 **「需要允许安装脚本」**——点「**允许这些脚本并重试**」就行。授权记在当前 profile 里，只问这

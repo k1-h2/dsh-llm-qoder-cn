@@ -445,7 +445,8 @@ export class QoderAdapter extends LlmAdapter {
     session.recordRequestInput(options.system, options.messages)
     session.fedMessages = options.messages
     session.fedSystem = options.system
-    yield* session.stream(options, plan.feed === null ? null : await this.buildFeed(plan.feed, generation.vision, images))
+    const feed = plan.feed === null ? null : await this.buildFeed(plan.feed, generation.vision, images)
+    yield* session.stream(options, feed, plan.feed === null ? undefined : feedToText(plan.feed))
   }
 
   private async *firstTurn(
@@ -467,7 +468,7 @@ export class QoderAdapter extends LlmAdapter {
     session.fedSystem = options.system
     const feed = renderInitialFeed(options.system, options.messages)
     const images = await this.resolveImages(feedImageRefs(feed), vision, options.signal)
-    yield* session.stream(options, await this.buildFeed(feed, vision, images))
+    yield* session.stream(options, await this.buildFeed(feed, vision, images), feedToText(feed))
   }
 
   /** Image references carried by a message tail, skipping assistant content. */

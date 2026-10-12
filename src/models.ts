@@ -11,6 +11,7 @@ import type { ModelInfo } from '@qodercn-ai/qodercn-agent-sdk'
 import { qodercliAuth, query } from '@qodercn-ai/qodercn-agent-sdk'
 import type { QoderCatalogModel } from './catalog.ts'
 import { QODER_MODELS } from './catalog.ts'
+import { qoderCliOptions } from './cli.ts'
 import type { Live } from './live.ts'
 import { readLive } from './live.ts'
 
@@ -116,7 +117,14 @@ export class QoderModelCatalog {
   private async fetch(): Promise<readonly ModelInfo[]> {
     const q = query({
       prompt: inertInput(),
-      options: { auth: qodercliAuth(), tools: [], allowedTools: [], settingSources: [], maxTurns: 1 },
+      options: {
+        ...qoderCliOptions(),
+        auth: qodercliAuth(),
+        tools: [],
+        allowedTools: [],
+        settingSources: [],
+        maxTurns: 1,
+      },
     })
     try {
       return await withTimeout(q.getAvailableModels({ fetchStrategy: 'live' }), readLive(this.fetchTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS))

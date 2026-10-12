@@ -18,6 +18,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import { createSdkMcpServer, qodercliAuth, query } from '@qodercn-ai/qodercn-agent-sdk'
 import type { CanUseTool, Query } from '@qodercn-ai/qodercn-agent-sdk'
+import { qoderCliOptions } from './cli.ts'
 import { jsonSchemaToShape } from './jsonschema.ts'
 import type { Live } from './live.ts'
 import { readLive } from './live.ts'
@@ -281,6 +282,12 @@ export class QoderSession {
   /** Last real usage reported by the inner model for the active turn. */
   private lastUsage: SdkUsage | undefined
   /**
+   * The active turn's feed as plain text, when that feed carries image bytes.
+   * Kept so a CLI that refuses to decode those bytes can be retried without
+   * them instead of failing the turn. Cleared with the turn.
+   */
+  private feedFallback: string | undefined
+  /**
    * Session-level input token estimate for the CURRENT request, priced the
    * same way the harness token meter prices the surface (4 chars per token
    * on the rendered conversation the inner session actually receives). The
@@ -309,6 +316,10 @@ export class QoderSession {
     const q = query({
       prompt: this.channel,
       options: {
+        // Spawn the CLI instead of running its runtime in a worker thread: in
+        // this process that thread's sharp fights the host's own over the
+        // libvips DLL every image needs. See `cli.ts`.
+        ...qoderCliOptions(),
         auth: qodercliAuth(),
         tools: [],
         allowedTools: [],
@@ -470,8 +481,15 @@ export class QoderSession {
    * @param options - the host request (signal; tools already registered).
    * @param feed - literal text, resolved content blocks (a vision turn), or
    *   null for a pure tool-result continuation.
+   * @param fallback - the same feed rendered as text. Used only if the inner
+   *   CLI refuses the turn's image bytes, in which case the turn is resent
+   *   without them rather than failing (see {@link retryWithoutImages}).
    */
-  async *stream(options: GenerateOptions, feed: string | readonly ChannelContent[] | null): AsyncGenerator<StreamChunk> {
+  async *stream(
+    options: GenerateOptions,
+    feed: string | readonly ChannelContent[] | null,
+    fallback?: string,
+  ): AsyncGenerator<StreamChunk> {
     if (this.queue !== null) throw new LlmError(`qoder session ${this.sessionId} already has a turn in flight`, 'CONFLICT')
     if (this.disposed) throw new LlmError(`qoder session ${this.sessionId} was disposed`, 'TRANSPORT')
     const q = this.ensureStarted()
@@ -479,6 +497,7 @@ export class QoderSession {
     this.resetTurnState()
     if (feed !== null) {
       const content: ChannelContent[] = typeof feed === 'string' ? [{ type: 'text', text: feed }] : [...feed]
+      this.feedFallback = fallback !== undefined && content.some(block => block.type === 'image') ? fallback : undefined
       this.turnInputChars += contentChars(content)
       this.channel.push({
         type: 'user',
@@ -515,7 +534,40 @@ export class QoderSession {
       if (abortTimer !== undefined) clearTimeout(abortTimer)
       this.queue = null
       this.abortPending = false
+      this.feedFallback = undefined
     }
+  }
+
+  /**
+   * Resend the current turn without its images after the CLI refused them.
+   *
+   * The inner CLI decodes every image before the model sees the turn, and a
+   * decode it cannot do fails that whole turn — the host would surface an error
+   * for a question whose only problem was the pixels. The failed turn never
+   * reached the model, so the same turn goes out again with the images replaced
+   * by the harness's own handle text, the same text a text-only route renders,
+   * and the user still gets an answer.
+   *
+   * @param detail - the failed result frame's subtype and errors.
+   * @returns whether a retry was started, in which case the turn must not be
+   *   ended: the retry's own result frame settles it.
+   */
+  private retryWithoutImages(detail: string): boolean {
+    const fallback = this.feedFallback
+    if (fallback === undefined || !isImageAttachFailure(detail)) return false
+    // Anything already streamed belongs to a real answer this turn produced:
+    // resending would duplicate it instead of replacing it.
+    if (this.textBlock !== undefined || this.reasoningBlock !== undefined
+      || this.toolCalls.length > 0 || this.outputChars > 0) return false
+    this.feedFallback = undefined
+    this.resetTurnState()
+    this.turnInputChars += fallback.length
+    this.channel.push({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: fallback }] },
+      parent_tool_use_id: null,
+    })
+    return true
   }
 
   /** Tear the inner process down; parked calls die with it. */
@@ -767,6 +819,7 @@ export class QoderSession {
         return
       }
       const detail = `${message.subtype} ${safeErrors(message.errors)}`
+      if (this.retryWithoutImages(detail)) return
       this.endTurn({
         kind: 'error',
         failure: { message: `qoder turn failed: ${detail}`, code: classifyTurnError(detail) },
@@ -835,6 +888,20 @@ export function classifyTurnError(detail: string): string {
 }
 
 /**
+ * Whether a failed turn is the CLI refusing an image it could not decode.
+ *
+ * qodercli decodes every attached image before the model sees the turn, and
+ * reports such a failure with a fixed set of phrasings: the sentence it shows
+ * the user, its terminal reason, and the error code underneath. The turn itself
+ * is fine — only the pixels are not, which is what makes it safe to resend.
+ *
+ * @param detail - the failed result frame's subtype and errors.
+ */
+export function isImageAttachFailure(detail: string): boolean {
+  return /image_processing_failed|unable to attach image|invalid or unsupported image data/i.test(detail)
+}
+
+/**
  * Warm-session registry with insertion-order LRU eviction, plus the cold
  * one-shot path for side-channel requests (titles, compaction).
  */
@@ -891,6 +958,7 @@ export class QoderSessionManager {
     const q = query({
       prompt,
       options: {
+        ...qoderCliOptions(),
         auth: qodercliAuth(),
         tools: [],
         allowedTools: [],

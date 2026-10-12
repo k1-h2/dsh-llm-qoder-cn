@@ -138,6 +138,12 @@ export declare class QoderSession {
     /** Last real usage reported by the inner model for the active turn. */
     private lastUsage;
     /**
+     * The active turn's feed as plain text, when that feed carries image bytes.
+     * Kept so a CLI that refuses to decode those bytes can be retried without
+     * them instead of failing the turn. Cleared with the turn.
+     */
+    private feedFallback;
+    /**
      * Session-level input token estimate for the CURRENT request, priced the
      * same way the harness token meter prices the surface (4 chars per token
      * on the rendered conversation the inner session actually receives). The
@@ -185,8 +191,26 @@ export declare class QoderSession {
      * @param options - the host request (signal; tools already registered).
      * @param feed - literal text, resolved content blocks (a vision turn), or
      *   null for a pure tool-result continuation.
+     * @param fallback - the same feed rendered as text. Used only if the inner
+     *   CLI refuses the turn's image bytes, in which case the turn is resent
+     *   without them rather than failing (see {@link retryWithoutImages}).
      */
-    stream(options: GenerateOptions, feed: string | readonly ChannelContent[] | null): AsyncGenerator<StreamChunk>;
+    stream(options: GenerateOptions, feed: string | readonly ChannelContent[] | null, fallback?: string): AsyncGenerator<StreamChunk>;
+    /**
+     * Resend the current turn without its images after the CLI refused them.
+     *
+     * The inner CLI decodes every image before the model sees the turn, and a
+     * decode it cannot do fails that whole turn — the host would surface an error
+     * for a question whose only problem was the pixels. The failed turn never
+     * reached the model, so the same turn goes out again with the images replaced
+     * by the harness's own handle text, the same text a text-only route renders,
+     * and the user still gets an answer.
+     *
+     * @param detail - the failed result frame's subtype and errors.
+     * @returns whether a retry was started, in which case the turn must not be
+     *   ended: the retry's own result frame settles it.
+     */
+    private retryWithoutImages;
     /** Tear the inner process down; parked calls die with it. */
     close(): void;
     private resetTurnState;
@@ -229,6 +253,17 @@ export declare function safeErrors(errors: unknown): string;
  * surfacing) fire instead of a dead-end BACKEND_TURN_ERROR.
  */
 export declare function classifyTurnError(detail: string): string;
+/**
+ * Whether a failed turn is the CLI refusing an image it could not decode.
+ *
+ * qodercli decodes every attached image before the model sees the turn, and
+ * reports such a failure with a fixed set of phrasings: the sentence it shows
+ * the user, its terminal reason, and the error code underneath. The turn itself
+ * is fine — only the pixels are not, which is what makes it safe to resend.
+ *
+ * @param detail - the failed result frame's subtype and errors.
+ */
+export declare function isImageAttachFailure(detail: string): boolean;
 /**
  * Warm-session registry with insertion-order LRU eviction, plus the cold
  * one-shot path for side-channel requests (titles, compaction).

@@ -44,3 +44,56 @@ export declare function countWideChars(text: string): number;
  * @returns the estimated token count.
  */
 export declare function estimateTextTokens(chars: number, wideChars: number): number;
+/**
+ * The output tokens one turn generated, priced by script.
+ *
+ * Everything the model produced belongs here, whatever block carried it: visible
+ * text, reasoning, and tool-call names and arguments. That last one is easy to
+ * miss and usually the largest — measured at 86% of the characters in a
+ * three-call turn — and because the harness derives `tok/s` from the output
+ * tokens an adapter reports, omitting it under-reports speed several fold on
+ * exactly the multi-step agentic work where the figure is worth reading.
+ *
+ * Reasoning is a SUBSET of the output total, not a separate bucket: the harness
+ * discards an entire reading whose `reasoningTokens` exceeds its `outputTokens`,
+ * so {@link usage} clamps it rather than trusting the caller to.
+ */
+export declare class TurnOutputAccounting {
+    private chars;
+    private wideChars;
+    private reasoningChars;
+    private reasoningWideChars;
+    /** Count generated text: visible output, or a tool-call name or arguments. */
+    addOutput(text: string): void;
+    /** Count generated reasoning, which is also part of the output total. */
+    addReasoning(text: string): void;
+    /** Total generated characters, for diagnostics. */
+    get outputChars(): number;
+    /** Generated reasoning characters, a subset of {@link outputChars}. */
+    get reasoningCharsTotal(): number;
+    /** Discard the turn's counts; called when a turn ends or is retried. */
+    reset(): void;
+    /**
+     * The turn's `outputTokens` and, when it reasoned, its `reasoningTokens`.
+     *
+     * Both are at least 1 so a turn that produced only a tool call still reports a
+     * positive count, and reasoning never exceeds output.
+     */
+    usage(): {
+        outputTokens: number;
+        reasoningTokens?: number;
+    };
+    /**
+     * This turn's reasoning tokens, clamped inside a real metered output total.
+     *
+     * Used when the CLI reports genuine `output_tokens`: the reasoning figure is
+     * still the local estimate, but it must stay a subset of what the provider
+     * counted or the harness discards the reading.
+     *
+     * @param meteredOutput - the provider's own output token count.
+     * @returns a spreadable `reasoningTokens` field, or nothing when unmeasured.
+     */
+    reasoningTokensWithin(meteredOutput: number): {
+        reasoningTokens?: number;
+    };
+}

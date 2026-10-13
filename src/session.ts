@@ -23,7 +23,7 @@ import { jsonSchemaToShape } from './jsonschema.ts'
 import type { Live } from './live.ts'
 import { readLive } from './live.ts'
 import { feedImageRefs, feedTextLength, feedWideCharCount, renderInitialFeed } from './render.ts'
-import { countWideChars, estimateTextTokens } from './tokens.ts'
+import { TurnOutputAccounting, estimateTextTokens } from './tokens.ts'
 
 /** MCP server name this adapter exposes host tools under. */
 export const MCP_SERVER_NAME = 'dsh-host'
@@ -38,6 +38,20 @@ const DEFAULT_ABORT_GRACE_MS = 5_000
 export const DEFAULT_MAX_SESSIONS = 8
 /** Inner turns allowed for one side-channel (title, compaction) request. */
 const DEFAULT_COLD_MAX_TURNS = 4
+
+/**
+ * One content block as the assistant message actually carries it.
+ *
+ * The SDK's declared content type names only `text`, but the wire carries the
+ * full block shape, including the `tool_use` blocks a tool-heavy turn spends
+ * most of its output on. This is the local view used to read them.
+ */
+interface WireContentBlock {
+  type?: string
+  text?: string
+  name?: string
+  input?: unknown
+}
 
 /**
  * Runtime knobs shared by every warm session a manager owns. Populated from the
@@ -297,17 +311,13 @@ export class QoderSession {
   private reasoningBlock: { index: number, text: string } | undefined
   private openTool: ToolUnderAssembly | undefined
   private toolCalls: ToolUnderAssembly[] = []
-  private outputChars = 0
-  private reasoningChars = 0
   /**
-   * How much of {@link outputChars}/{@link reasoningChars} is wide (CJK) text.
+   * This turn's generated output, priced by script.
    *
-   * Tracked separately because the two scripts price very differently, and the
-   * harness derives `tok/s` from the output tokens this session reports — a flat
-   * 4 chars/token would under-report Chinese by 2.26x and so under-report speed.
+   * Counts visible text, reasoning, and tool-call names and arguments — see
+   * {@link TurnOutputAccounting} for why the last one matters.
    */
-  private outputWideChars = 0
-  private reasoningWideChars = 0
+  private readonly output = new TurnOutputAccounting()
   /** Last real usage reported by the inner model for the active turn. */
   private lastUsage: SdkUsage | undefined
   /**
@@ -617,7 +627,7 @@ export class QoderSession {
     // Anything already streamed belongs to a real answer this turn produced:
     // resending would duplicate it instead of replacing it.
     if (this.textBlock !== undefined || this.reasoningBlock !== undefined
-      || this.toolCalls.length > 0 || this.outputChars > 0) return false
+      || this.toolCalls.length > 0 || this.output.outputChars > 0) return false
     this.feedFallback = undefined
     this.resetTurnState()
     this.turnInputChars += fallback.length
@@ -643,10 +653,7 @@ export class QoderSession {
     this.openTool = undefined
     this.toolCalls = []
     this.turnInputChars = 0
-    this.outputChars = 0
-    this.reasoningChars = 0
-    this.outputWideChars = 0
-    this.reasoningWideChars = 0
+    this.output.reset()
     // Pairing state is per turn: canUseTool ids are claimed by handlers within
     // the turn, and host callId mappings were consumed by deliverToolResults
     // before this stream started.
@@ -657,24 +664,18 @@ export class QoderSession {
 
   private emit(chunk: StreamChunk): void { this.queue?.push({ kind: 'chunk', chunk }) }
 
+  /** Count generated text toward this turn's output tokens. */
+  private countOutput(text: string): void { this.output.addOutput(text) }
+
   /**
    * Price this turn's generated text, by script rather than at a flat rate.
    *
-   * The harness derives `tok/s` from the `outputTokens` an adapter reports, and
-   * `reasoningTokens` is a subset of it (the harness rejects a reading where it
-   * is not). Pricing both from the same counters keeps that invariant.
+   * {@link TurnOutputAccounting} owns the counters and the harness invariant
+   * that `reasoningTokens` is a subset of `outputTokens` — the harness discards
+   * a whole reading when it is not.
    */
   private outputUsage(): { outputTokens: number, reasoningTokens?: number } {
-    const outputTokens = Math.max(1, Math.ceil(estimateTextTokens(
-      this.outputChars + this.reasoningChars,
-      this.outputWideChars + this.reasoningWideChars,
-    )))
-    if (this.reasoningChars === 0) return { outputTokens }
-    const reasoningTokens = Math.max(1, Math.ceil(estimateTextTokens(this.reasoningChars, this.reasoningWideChars)))
-    // Monotonicity already guarantees this, but the harness drops the WHOLE
-    // reading when reasoning exceeds output, so the invariant is enforced here
-    // rather than left to a rounding edge.
-    return { outputTokens, reasoningTokens: Math.min(reasoningTokens, outputTokens) }
+    return this.output.usage()
   }
 
   private usage(): TokenUsage {
@@ -698,9 +699,7 @@ export class QoderSession {
         outputTokens: real.output_tokens,
         ...cacheRead > 0 ? { cacheReadTokens: cacheRead } : {},
         ...cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {},
-        ...this.reasoningChars > 0
-          ? { reasoningTokens: Math.min(real.output_tokens, Math.ceil(estimateTextTokens(this.reasoningChars, this.reasoningWideChars))) }
-          : {},
+        ...this.output.reasoningTokensWithin(real.output_tokens),
       }
     }
     // The plan meters no tokens, but it does report how full this session's
@@ -807,14 +806,26 @@ export class QoderSession {
               this.hostCallByToolUse.set(callId, block.id)
             }
             const chunkIndex = this.blockIndex++
+            const initialArguments = block.input !== undefined && block.input !== null && Object.keys(block.input as object).length > 0
+              ? JSON.stringify(block.input)
+              : ''
             this.openTool = {
               chunkIndex,
               callId,
               name: hostToolName(block.name ?? ''),
-              arguments: block.input !== undefined && block.input !== null && Object.keys(block.input as object).length > 0
-                ? JSON.stringify(block.input)
-                : '',
+              arguments: initialArguments,
             }
+            // Tool-call arguments are generated output, and on an agentic turn
+            // they are most of it — measured at 86% of the characters in a
+            // three-call turn. The harness prices a tool-call block as
+            // `name + arguments` and derives `tok/s` from the output tokens an
+            // adapter reports, so leaving them out under-reports speed several
+            // fold on exactly the multi-step turns where speed is worth reading.
+            // Streaming turns deliver the body through `input_json_delta` and
+            // leave `block.input` empty, so this counts only the non-streaming
+            // case; the two can never both carry the same bytes.
+            this.countOutput(this.openTool.name)
+            this.countOutput(initialArguments)
             this.emit({ type: 'block-start', index: chunkIndex, blockType: 'tool-call' })
             this.emit({
               type: 'tool-call-delta',
@@ -835,8 +846,7 @@ export class QoderSession {
               this.emit({ type: 'block-start', index: this.textBlock.index, blockType: 'text' })
             }
             this.textBlock.text += delta.text
-            this.outputChars += delta.text.length
-            this.outputWideChars += countWideChars(delta.text)
+            this.countOutput(delta.text)
             this.emit({ type: 'text-delta', index: this.textBlock.index, text: delta.text })
           } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
             if (this.reasoningBlock === undefined) {
@@ -844,11 +854,11 @@ export class QoderSession {
               this.emit({ type: 'block-start', index: this.reasoningBlock.index, blockType: 'reasoning' })
             }
             this.reasoningBlock.text += delta.thinking
-            this.reasoningChars += delta.thinking.length
-            this.reasoningWideChars += countWideChars(delta.thinking)
+            this.output.addReasoning(delta.thinking)
             this.emit({ type: 'reasoning-delta', index: this.reasoningBlock.index, text: delta.thinking })
           } else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string' && this.openTool !== undefined) {
             this.openTool.arguments += delta.partial_json
+            this.countOutput(delta.partial_json)
             this.emit({
               type: 'tool-call-delta',
               index: this.openTool.chunkIndex,
@@ -886,16 +896,25 @@ export class QoderSession {
     if (message.type === 'assistant') {
       // Fallback turns (no partial events) still carry the real usage.
       if (message.message?.usage !== undefined) this.lastUsage = message.message.usage
-      // Fallback for turns that streamed no partial events.
+      // Fallback for turns that streamed no partial events: price whatever the
+      // finished message carries, including any tool-call arguments.
       if (this.textBlock === undefined && this.toolCalls.length === 0) {
-        const text = (message.message?.content ?? [])
+        // The declared content type only names `text`, but the wire carries the
+        // full block shape; tool_use blocks are what a tool-heavy turn spends
+        // its output on, so they are read through a local view of that shape.
+        const content = (message.message?.content ?? []) as readonly WireContentBlock[]
+        for (const block of content) {
+          if (block.type !== 'tool_use') continue
+          this.countOutput(block.name ?? '')
+          this.countOutput(JSON.stringify(block.input ?? ''))
+        }
+        const text = content
           .filter(block => block.type === 'text')
           .map(block => block.text ?? '')
           .join('')
         if (text.length > 0) {
           this.textBlock = { index: this.blockIndex++, text }
-          this.outputChars += text.length
-          this.outputWideChars += countWideChars(text)
+          this.countOutput(text)
           this.emit({ type: 'block-start', index: this.textBlock.index, blockType: 'text' })
           this.emit({ type: 'text-delta', index: this.textBlock.index, text })
         }

@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  NARROW_CHARS_PER_TOKEN, WIDE_CHARS_PER_TOKEN, countWideChars, estimateTextTokens, isWideChar,
+  NARROW_CHARS_PER_TOKEN, TurnOutputAccounting, WIDE_CHARS_PER_TOKEN, countWideChars, estimateTextTokens, isWideChar,
 } from '../src/tokens.ts'
 
 describe('wide character classification', () => {
@@ -61,5 +61,73 @@ describe('token estimation', () => {
     expect(estimateTextTokens(10, 99)).toBeCloseTo(10 / WIDE_CHARS_PER_TOKEN, 5)
     expect(estimateTextTokens(10, -5)).toBeCloseTo(10 / NARROW_CHARS_PER_TOKEN, 5)
     expect(estimateTextTokens(0, 0)).toBe(0)
+  })
+})
+
+/**
+ * Per-turn output accounting.
+ *
+ * The regression this guards: tool-call arguments were never counted, and on an
+ * agentic turn they are most of the output — measured at 86% of the characters
+ * in a three-call turn. Because the harness derives `tok/s` from the reported
+ * output tokens, dropping them under-reported speed several fold (a real turn
+ * went from 72.5 to 311.2 tok/s once they were counted).
+ */
+describe('turn output accounting', () => {
+  it('counts tool-call arguments as generated output', () => {
+    const account = new TurnOutputAccounting()
+    account.addOutput('write_file')
+    account.addOutput('{"path":"src/a.ts","content":"export const x = 1"}')
+    const { outputTokens } = account.usage()
+    const withoutArguments = new TurnOutputAccounting()
+    withoutArguments.addOutput('write_file')
+    expect(outputTokens).toBeGreaterThan(withoutArguments.usage().outputTokens * 3)
+  })
+
+  it('counts reasoning toward output, and reports it as a subset', () => {
+    const account = new TurnOutputAccounting()
+    account.addOutput('answer')
+    account.addReasoning('thinking about the answer')
+    const { outputTokens, reasoningTokens } = account.usage()
+    expect(reasoningTokens).toBeDefined()
+    expect(reasoningTokens!).toBeLessThanOrEqual(outputTokens)
+    // Reasoning is inside the total, not added on top of it.
+    const total = new TurnOutputAccounting()
+    total.addOutput('answer')
+    total.addOutput('thinking about the answer')
+    expect(outputTokens).toBe(total.usage().outputTokens)
+  })
+
+  it('reports no reasoning field on a turn that did not reason', () => {
+    const account = new TurnOutputAccounting()
+    account.addOutput('plain answer')
+    expect(account.usage().reasoningTokens).toBeUndefined()
+  })
+
+  it('always reports at least one output token', () => {
+    expect(new TurnOutputAccounting().usage().outputTokens).toBe(1)
+  })
+
+  it('forgets everything on reset, so a retried turn is not double-counted', () => {
+    const account = new TurnOutputAccounting()
+    account.addOutput('discarded first attempt')
+    account.addReasoning('discarded reasoning')
+    account.reset()
+    expect(account.outputChars).toBe(0)
+    expect(account.reasoningCharsTotal).toBe(0)
+    account.addOutput('好')
+    expect(account.usage().reasoningTokens).toBeUndefined()
+  })
+
+  it('keeps a metered reasoning figure inside the provider total', () => {
+    const account = new TurnOutputAccounting()
+    account.addReasoning('很长的思考过程'.repeat(50))
+    // A provider that counted fewer output tokens than the local reasoning
+    // estimate must not be handed a reasoning figure above its own total.
+    expect(account.reasoningTokensWithin(10).reasoningTokens).toBe(10)
+    // And a provider that counted none must not be given 1, which would exceed 0.
+    expect(account.reasoningTokensWithin(0).reasoningTokens).toBe(0)
+    // A turn that did not reason carries no field at all.
+    expect(new TurnOutputAccounting().reasoningTokensWithin(100)).toEqual({})
   })
 })

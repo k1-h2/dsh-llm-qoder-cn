@@ -143,10 +143,19 @@ CLI 只接受模型自己声明的窗口（见目录里的 `availableContextWind
 与工具定义，约 120–200 token。环里「系统提示词 / 工具定义 / 对话消息」三项是 DSH 自己按
 `4 字符/token` 估的**本地分类**，合计会低于总数，这是正常的，不是虚高。
 
-**tok/s 为什么偏低？** 因为换算率。DSH 算 `tok/s = 输出 token ÷ 解码耗时`，而输出 token 由本插件
-上报。实测本后端的分词器：**中文 1.77 字符/token、英文 5.20 字符/token**，而原先统一按
-`4 字符/token` 估，中文因此被低估 **2.26 倍**——中文回复的 tok/s 就跟着显示成实际的一半左右。
-v1.0.3 起按字符集分别计价（`src/tokens.ts`），实测同一段中文回复 20.9 → 45.8 tok/s。
+**tok/s 为什么偏低？** 两个原因，v1.0.3 与 v1.0.4 各修一个。DSH 算
+`tok/s = 输出 token ÷ 解码耗时`，而输出 token 由本插件上报，所以**凡是模型生成的内容都必须计入**：
+
+1. **换算率**（v1.0.3）。实测本后端的分词器：**中文 1.77 字符/token、英文 5.20 字符/token**，
+   而原先统一按 `4 字符/token` 估，中文因此被低估 **2.26 倍**。现在按字符集分别计价。
+2. **工具调用参数**（v1.0.4）。原先只统计正文与思考，**工具调用的 name/arguments 一个字符都没算**，
+   而 agentic 回合里输出的大头正是它——实测一个三次工具调用的回合中占 **86%** 的字符。DSH 自己的
+   计量器是把工具调用计价为 `name + arguments` 的（`dsh-token-meter` 的 `estimateContent`），
+   漏掉它会让多步任务的 tok/s 低到十分之一量级。
+
+实测效果：同一段中文回复 20.9 → 45.8 tok/s；一个工具调用回合 72.5 → 311.2 tok/s。
+计数逻辑在 `src/tokens.ts` 的 `TurnOutputAccounting`，由 14 个单元测试钉住，其中一条专门断言
+「工具参数必须计入」。
 
 **设置点了没反应、一直「保存中」？** v0.6.0 已修。原因是 `.volatile()` 字段的改动**不会重启
 插件**，而适配器在挂载时把配置抄进了自己的字段，于是永远按旧值作答——写入成功、磁盘正确、
@@ -203,10 +212,19 @@ if (!pending.length && !force) return          // 不重启，不重新 apply
 **构建与测试**
 
 ```sh
-pnpm install     # 首次会下载 qoderclicn worker runtime
-pnpm run build   # tsc 出 .d.ts，tsdown 出 lib/index.js
-pnpm test        # vitest
+pnpm install          # 首次会下载 qoderclicn worker runtime
+pnpm run build:clean   # 清掉 lib/ 再构建；tsc 出 .d.ts，tsdown 出 lib/index.js
+pnpm test              # vitest
 ```
+
+**别用 `pnpm build` 验证改动。** 它的命令是 `tsc && tsdown`：类型一错，`&&` 就短路，`tsdown`
+根本不跑，于是 `lib/index.js` **保持旧内容**——而 `lib/` 才是 DSH 真正加载、npm 真正发布的东西。
+如果只盯着源码或只跑测试，会误以为改动已生效。发布路径上的 `prepublishOnly` 用的是
+`build:clean`（先删 `lib/` 再构建），所以类型错误会让发布失败而不是发出陈旧包。
+
+注意 **`pnpm build` 与 `pnpm run build` 在 PowerShell 里可能给出不同的退出码**（前者经
+`pnpm` 的内置脚本别名，后者经 `run`）。判断构建是否成功请直接看 `lib/index.js` 的时间戳，
+或跑 `build:clean`——不要只信退出码。
 
 ## 合规与风险
 

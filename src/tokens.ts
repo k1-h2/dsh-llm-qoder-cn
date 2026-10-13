@@ -70,3 +70,85 @@ export function estimateTextTokens(chars: number, wideChars: number): number {
   const wide = Math.max(0, Math.min(chars, wideChars))
   return wide / WIDE_CHARS_PER_TOKEN + (chars - wide) / NARROW_CHARS_PER_TOKEN
 }
+
+/**
+ * The output tokens one turn generated, priced by script.
+ *
+ * Everything the model produced belongs here, whatever block carried it: visible
+ * text, reasoning, and tool-call names and arguments. That last one is easy to
+ * miss and usually the largest — measured at 86% of the characters in a
+ * three-call turn — and because the harness derives `tok/s` from the output
+ * tokens an adapter reports, omitting it under-reports speed several fold on
+ * exactly the multi-step agentic work where the figure is worth reading.
+ *
+ * Reasoning is a SUBSET of the output total, not a separate bucket: the harness
+ * discards an entire reading whose `reasoningTokens` exceeds its `outputTokens`,
+ * so {@link usage} clamps it rather than trusting the caller to.
+ */
+export class TurnOutputAccounting {
+  private chars = 0
+  private wideChars = 0
+  private reasoningChars = 0
+  private reasoningWideChars = 0
+
+  /** Count generated text: visible output, or a tool-call name or arguments. */
+  addOutput(text: string): void {
+    if (text.length === 0) return
+    this.chars += text.length
+    this.wideChars += countWideChars(text)
+  }
+
+  /** Count generated reasoning, which is also part of the output total. */
+  addReasoning(text: string): void {
+    if (text.length === 0) return
+    this.addOutput(text)
+    this.reasoningChars += text.length
+    this.reasoningWideChars += countWideChars(text)
+  }
+
+  /** Total generated characters, for diagnostics. */
+  get outputChars(): number { return this.chars }
+
+  /** Generated reasoning characters, a subset of {@link outputChars}. */
+  get reasoningCharsTotal(): number { return this.reasoningChars }
+
+  /** Discard the turn's counts; called when a turn ends or is retried. */
+  reset(): void {
+    this.chars = 0
+    this.wideChars = 0
+    this.reasoningChars = 0
+    this.reasoningWideChars = 0
+  }
+
+  /**
+   * The turn's `outputTokens` and, when it reasoned, its `reasoningTokens`.
+   *
+   * Both are at least 1 so a turn that produced only a tool call still reports a
+   * positive count, and reasoning never exceeds output.
+   */
+  usage(): { outputTokens: number, reasoningTokens?: number } {
+    const outputTokens = Math.max(1, Math.ceil(estimateTextTokens(this.chars, this.wideChars)))
+    if (this.reasoningChars === 0) return { outputTokens }
+    const reasoningTokens = Math.max(1, Math.ceil(estimateTextTokens(this.reasoningChars, this.reasoningWideChars)))
+    return { outputTokens, reasoningTokens: Math.min(reasoningTokens, outputTokens) }
+  }
+
+  /**
+   * This turn's reasoning tokens, clamped inside a real metered output total.
+   *
+   * Used when the CLI reports genuine `output_tokens`: the reasoning figure is
+   * still the local estimate, but it must stay a subset of what the provider
+   * counted or the harness discards the reading.
+   *
+   * @param meteredOutput - the provider's own output token count.
+   * @returns a spreadable `reasoningTokens` field, or nothing when unmeasured.
+   */
+  reasoningTokensWithin(meteredOutput: number): { reasoningTokens?: number } {
+    if (this.reasoningChars === 0) return {}
+    const reasoningTokens = Math.ceil(estimateTextTokens(this.reasoningChars, this.reasoningWideChars))
+    // Clamped to the metered total, not floored at 1: a provider that counted no
+    // output tokens must not be handed a reasoning figure of 1, which would
+    // exceed its output and cost the whole reading.
+    return { reasoningTokens: Math.max(0, Math.min(meteredOutput, reasoningTokens)) }
+  }
+}

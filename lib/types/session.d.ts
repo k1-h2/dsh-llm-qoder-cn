@@ -149,17 +149,13 @@ export declare class QoderSession {
     private reasoningBlock;
     private openTool;
     private toolCalls;
-    private outputChars;
-    private reasoningChars;
     /**
-     * How much of {@link outputChars}/{@link reasoningChars} is wide (CJK) text.
+     * This turn's generated output, priced by script.
      *
-     * Tracked separately because the two scripts price very differently, and the
-     * harness derives `tok/s` from the output tokens this session reports — a flat
-     * 4 chars/token would under-report Chinese by 2.26x and so under-report speed.
+     * Counts visible text, reasoning, and tool-call names and arguments — see
+     * {@link TurnOutputAccounting} for why the last one matters.
      */
-    private outputWideChars;
-    private reasoningWideChars;
+    private readonly output;
     /** Last real usage reported by the inner model for the active turn. */
     private lastUsage;
     /**
@@ -252,12 +248,14 @@ export declare class QoderSession {
     close(): void;
     private resetTurnState;
     private emit;
+    /** Count generated text toward this turn's output tokens. */
+    private countOutput;
     /**
      * Price this turn's generated text, by script rather than at a flat rate.
      *
-     * The harness derives `tok/s` from the `outputTokens` an adapter reports, and
-     * `reasoningTokens` is a subset of it (the harness rejects a reading where it
-     * is not). Pricing both from the same counters keeps that invariant.
+     * {@link TurnOutputAccounting} owns the counters and the harness invariant
+     * that `reasoningTokens` is a subset of `outputTokens` — the harness discards
+     * a whole reading when it is not.
      */
     private outputUsage;
     private usage;

@@ -24,7 +24,7 @@ import { DEFAULT_MODEL_CACHE_TTL_MS, DEFAULT_FETCH_TIMEOUT_MS, QoderModelCatalog
 import { feedImageRefs, feedToText, imageRefs, joinFeeds, renderInitialFeed, renderRefreshed, renderUserTurn } from './render.ts'
 import type { Feed } from './render.ts'
 import { QoderSession, QoderSessionManager, DEFAULT_MAX_SESSIONS } from './session.ts'
-import type { ChannelContent, ResolvedImages } from './session.ts'
+import type { ChannelContent, ResolvedImages, SessionModelPolicy } from './session.ts'
 
 /**
  * Read one durable image occurrence into the bytes a request sends.
@@ -420,10 +420,15 @@ export class QoderAdapter extends LlmAdapter {
       return
     }
     const sessionId = String(options.sessionId)
-    // The seam carries no per-request context window: the route's capacity
-    // comes from resolveModel, and the inner session uses the CLI's own window.
+    // The seam carries no per-request context window: the route's capacity comes
+    // from resolveModel. Handing that same window to the session gives the
+    // meter one denominator for both the CLI's context ratio and the harness
+    // percentage, so the two can never describe different windows.
     const policy = {
       ...options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort },
+      ...generation.info.context?.contextWindow === undefined
+        ? {}
+        : { contextWindow: generation.info.context.contextWindow },
     }
     let session = this.sessions.forSession(sessionId, model)
     if (session.fedMessages === undefined) {
@@ -453,7 +458,7 @@ export class QoderAdapter extends LlmAdapter {
     session: QoderSession,
     options: GenerateOptions,
     model: string,
-    policy: { reasoningEffort?: string },
+    policy: SessionModelPolicy,
     vision: boolean,
   ): AsyncGenerator<StreamChunk> {
     session.setModel(model, policy)

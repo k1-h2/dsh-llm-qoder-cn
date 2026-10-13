@@ -55,6 +55,13 @@ export interface SessionRuntimeOptions {
   abortGraceMs?: Live<number>
 }
 
+/** Per-request model policy a warm session runs with. */
+export interface SessionModelPolicy {
+  reasoningEffort?: string
+  /** The window the route publishes; the context meter divides by it. */
+  contextWindow?: number
+}
+
 /**
  * One user-turn content block on the streaming-input channel. Text is the
  * historical shape; image blocks use the SDK's Claude-compatible base64
@@ -176,6 +183,8 @@ interface SdkUsage {
   output_tokens?: number | null
   cache_read_input_tokens?: number | null
   cache_creation_input_tokens?: number | null
+  /** The CLI's own measurement of how full this session's context is. */
+  context_usage_ratio?: number | null
 }
 
 /** Structural view of the SDK stream events this consumer cares about. */
@@ -291,10 +300,17 @@ export class QoderSession {
    * Session-level input token estimate for the CURRENT request, priced the
    * same way the harness token meter prices the surface (4 chars per token
    * on the rendered conversation the inner session actually receives). The
-   * qoder CLI zeroes its per-stream usage frames, so without this the harness
-   * context meter would read ~0% and auto-compaction would never trigger.
+   * qoder CLI zeroes its per-stream usage frames, so without some estimate the
+   * harness context meter would read ~0% and auto-compaction would never
+   * trigger; the CLI's own context ratio is used whenever it reports one.
    */
   private estimatedInputTokens: number | undefined
+  /**
+   * The window this route publishes, i.e. the denominator the harness meter
+   * divides by. The CLI's context ratio is turned into tokens against this same
+   * number, so the meter and the ratio always describe one window.
+   */
+  private contextWindow: number | undefined
 
   /** Per-session runtime knobs, resolved from the plugin config at creation. */
   private readonly toolResultTimeoutMs: number
@@ -344,9 +360,10 @@ export class QoderSession {
   }
 
   /** Point the session at a model and its per-request policy. */
-  setModel(model: string, policy?: { reasoningEffort?: string }): void {
+  setModel(model: string, policy?: SessionModelPolicy): void {
     this.model = model
     this.reasoningEffort = policy?.reasoningEffort
+    this.contextWindow = policy?.contextWindow
   }
 
   /** Record the host system prompt; effective only before the process spawns. */
@@ -597,12 +614,12 @@ export class QoderSession {
   private emit(chunk: StreamChunk): void { this.queue?.push({ kind: 'chunk', chunk }) }
 
   private usage(): TokenUsage {
-    // Prefer real metering whenever the CLI actually reports it. Upstream's
-    // per-stream token frames are zeroed on this plan (probed: input_tokens,
-    // output_tokens and every cache field stay 0 across turns), so in practice
-    // the estimate below carries the context meter. Checking reality first
-    // means a plan or CLI build that DOES report metering — including cache
-    // reads — surfaces it instead of being masked by the estimate.
+    // Three tiers, most authoritative first. Real token metering wins whenever
+    // the CLI reports it, so a plan or CLI build that DOES meter — including
+    // cache reads — surfaces instead of being masked. This subscription does
+    // not: probed under both transports, `input_tokens`, `output_tokens`, every
+    // cache field, `total_cost_usd` and `modelUsage` all stay 0 across turns.
+    // What it does report is a context ratio, then a character estimate.
     const real = this.lastUsage
     if (real !== undefined
       && typeof real.input_tokens === 'number'
@@ -617,6 +634,20 @@ export class QoderSession {
         outputTokens: real.output_tokens,
         ...cacheRead > 0 ? { cacheReadTokens: cacheRead } : {},
         ...cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {},
+        ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
+      }
+    }
+    // The plan meters no tokens, but it does report how full this session's
+    // context is, and that ratio comes from the inner model's own tokenizer.
+    // Expressed against the route's window — the number the harness divides by,
+    // so the percentage reads exactly the CLI's ratio — it replaces the
+    // character estimate below, which prices 4 chars per token and so under-reads
+    // Chinese by several times, delaying auto-compaction.
+    const ratio = real?.context_usage_ratio
+    if (typeof ratio === 'number' && ratio > 0 && typeof this.contextWindow === 'number' && this.contextWindow > 0) {
+      return {
+        inputTokens: Math.min(this.contextWindow, Math.max(1, Math.ceil(ratio * this.contextWindow))),
+        outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
         ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
       }
     }

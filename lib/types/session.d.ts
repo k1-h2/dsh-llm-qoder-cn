@@ -29,6 +29,12 @@ export interface SessionRuntimeOptions {
     /** How long the inner process gets to acknowledge an abort. */
     abortGraceMs?: Live<number>;
 }
+/** Per-request model policy a warm session runs with. */
+export interface SessionModelPolicy {
+    reasoningEffort?: string;
+    /** The window the route publishes; the context meter divides by it. */
+    contextWindow?: number;
+}
 /**
  * One user-turn content block on the streaming-input channel. Text is the
  * historical shape; image blocks use the SDK's Claude-compatible base64
@@ -147,10 +153,17 @@ export declare class QoderSession {
      * Session-level input token estimate for the CURRENT request, priced the
      * same way the harness token meter prices the surface (4 chars per token
      * on the rendered conversation the inner session actually receives). The
-     * qoder CLI zeroes its per-stream usage frames, so without this the harness
-     * context meter would read ~0% and auto-compaction would never trigger.
+     * qoder CLI zeroes its per-stream usage frames, so without some estimate the
+     * harness context meter would read ~0% and auto-compaction would never
+     * trigger; the CLI's own context ratio is used whenever it reports one.
      */
     private estimatedInputTokens;
+    /**
+     * The window this route publishes, i.e. the denominator the harness meter
+     * divides by. The CLI's context ratio is turned into tokens against this same
+     * number, so the meter and the ratio always describe one window.
+     */
+    private contextWindow;
     /** Per-session runtime knobs, resolved from the plugin config at creation. */
     private readonly toolResultTimeoutMs;
     private readonly abortGraceMs;
@@ -158,9 +171,7 @@ export declare class QoderSession {
     /** Spawn the inner process (first stream only) and attach the consumer. */
     private ensureStarted;
     /** Point the session at a model and its per-request policy. */
-    setModel(model: string, policy?: {
-        reasoningEffort?: string;
-    }): void;
+    setModel(model: string, policy?: SessionModelPolicy): void;
     /** Record the host system prompt; effective only before the process spawns. */
     setSystem(system: string | undefined): void;
     /**

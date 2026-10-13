@@ -13,6 +13,7 @@
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { qoderCliOptions, resolveQoderCli, type CliLookup } from '../src/cli.ts'
+import { cliContextWindow } from '../src/adapter.ts'
 import { isImageAttachFailure } from '../src/session.ts'
 
 const EXE = process.platform === 'win32' ? '.exe' : ''
@@ -162,5 +163,47 @@ describe('image attach failure', () => {
       'Unable to attach file because it does not exist',
     ]
     for (const detail of others) expect(isImageAttachFailure(detail)).toBe(false)
+  })
+})
+
+/**
+ * The window the CLI runs with, which the context ratio is a fraction of.
+ *
+ * The CLI honours a requested window only when the model advertises it and
+ * keeps its own default otherwise. Getting this wrong inflates every token
+ * reading by the ratio of the two windows, so the rule is pinned here.
+ */
+describe('cli context window', () => {
+  const withWindows = (available?: readonly number[], fallback: { defaultContextWindow?: number, maxInputTokens?: number } = {}) => ({
+    ...fallback,
+    ...available === undefined ? {} : { availableContextWindows: available },
+  })
+
+  it('keeps a declared window the model advertises', () => {
+    expect(cliContextWindow(withWindows([200_000, 400_000, 1_000_000], { defaultContextWindow: 200_000 }), 1_000_000))
+      .toBe(1_000_000)
+    expect(cliContextWindow(withWindows([200_000, 400_000, 1_000_000], { defaultContextWindow: 200_000 }), 400_000))
+      .toBe(400_000)
+  })
+
+  it('falls back to the model\'s own window when the declared one is not advertised', () => {
+    // The reported bug: a 1M declaration on a 200K-only model. The CLI ignores
+    // it, so multiplying its ratio by 1M read five times too high.
+    expect(cliContextWindow(withWindows([200_000], { defaultContextWindow: 200_000 }), 1_000_000))
+      .toBe(200_000)
+    // A declared window below every advertised one is equally unhonoured.
+    expect(cliContextWindow(withWindows([200_000, 1_000_000], { defaultContextWindow: 200_000 }), 150_000))
+      .toBe(200_000)
+  })
+
+  it('answers nothing when the catalog said nothing, rather than guessing', () => {
+    expect(cliContextWindow(undefined, 1_000_000)).toBeUndefined()
+    expect(cliContextWindow({}, 1_000_000)).toBeUndefined()
+  })
+
+  it('prefers the declared default and the largest advertised window as fallbacks', () => {
+    expect(cliContextWindow(withWindows(undefined, { defaultContextWindow: 200_000 }), 1_000_000)).toBe(200_000)
+    expect(cliContextWindow(withWindows([200_000, 400_000]), 1_000_000)).toBe(400_000)
+    expect(cliContextWindow(withWindows(undefined, { maxInputTokens: 180_000 }), 1_000_000)).toBe(180_000)
   })
 })

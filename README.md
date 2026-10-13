@@ -123,9 +123,19 @@ qoderclicn --list-models                # 列出订阅实际可用的模型
 
 **缓存命中一直显示 0%？** 上游没有数据，不是映射错误。实测多轮会话逐帧检查，所有用量帧的
 `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`
-**全为 0**，`getUsageInfo()` 返回 `null`，`getContextUsage()` 直接超时。本插件能做的是
-`usage()` **先读真实用量帧、读不到才回退本地估算**（4 字符/token），这样上游一旦开始上报就会
-立刻显示出来。上下文占用用本地估算填报，否则计量环一直显示 0%、自动压缩也永不触发。
+**全为 0**，`total_cost_usd` 与 `modelUsage` 也是 0。本插件能做的是 `usage()` **先读真实用量帧、
+读不到才回退**，这样上游一旦开始上报就会立刻显示出来。
+
+**上下文占用是按什么算的？** 上游虽然不报 token，但每帧都带 `context_usage_ratio`——它自己量出的
+「上下文用了多少」。本插件把它乘上窗口换成 token，再交给 DSH 的计量环。
+
+这里有个坑（v1.0.1 踩过、v1.0.2 修）：**这个比率的分母是 CLI 实际运行的窗口，不是你配置的窗口**。
+CLI 只接受模型自己声明的窗口（见目录里的 `availableContextWindows`），配一个它不支持的窗口会被
+**静默忽略**——例如给只支持 200K 的 `auto` 配 1M，CLI 仍按 200K 跑，若拿 1M 去乘就虚高 5 倍。
+所以插件现在分两个窗口：给 DSH 的是你配置的值，给比率做分母的是 `cliContextWindow()`
+（模型声明里匹配得上就用你的，匹配不上就用模型自己的）。同时窗口会经
+`resolveModel.parameters.contextWindow` 真正下发给 CLI——在此之前它只告诉了 DSH，CLI 一直按默认
+200K 跑，配了 1M 也白配。
 
 **设置点了没反应、一直「保存中」？** v0.6.0 已修。原因是 `.volatile()` 字段的改动**不会重启
 插件**，而适配器在挂载时把配置抄进了自己的字段，于是永远按旧值作答——写入成功、磁盘正确、

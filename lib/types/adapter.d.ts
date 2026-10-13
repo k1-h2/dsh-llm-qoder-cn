@@ -84,6 +84,27 @@ export declare function pickContextWindow(live: {
     availableContextWindows?: readonly number[];
 } | undefined, override: number | undefined, fallback: number): number;
 /**
+ * The window the CLI will actually run this route with.
+ *
+ * Not the same thing as the window the harness is told about. A deployment may
+ * declare any window it likes — `modelContextWindows` accepts arbitrary numbers
+ * — but the CLI only honours one the model advertises in
+ * `availableContextWindows`; anything else it silently ignores and keeps its own
+ * default. Since the CLI measures `context_usage_ratio` against the window it is
+ * really using, this is the only correct multiplier for that ratio: using the
+ * declared window instead inflates every reading by
+ * `declared / actually-honoured` (5x for a 1M override on a 200K-only model).
+ *
+ * @param live - the live catalog entry, when the CLI answered.
+ * @param declared - the window this route publishes to the harness.
+ * @returns the window the CLI runs with, or undefined when unknown.
+ */
+export declare function cliContextWindow(live: {
+    maxInputTokens?: number;
+    defaultContextWindow?: number;
+    availableContextWindows?: readonly number[];
+} | undefined, declared: number): number | undefined;
+/**
  * Build the `reasoning` metadata block for a resolved model, or undefined
  * when the model does not support reasoning.
  * @param efforts - CLI-reported effort ids (absent for reasoning-less models).

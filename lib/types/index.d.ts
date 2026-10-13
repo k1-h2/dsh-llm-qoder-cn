@@ -60,7 +60,7 @@ declare module '@deepseek-ai/cordis' {
         'loader/volatile-update'(paths: readonly (readonly string[])[]): void;
     }
 }
-export { QoderAdapter, QODER_PROVIDER, pickContextWindow } from './adapter.ts';
+export { QoderAdapter, QODER_PROVIDER, cliContextWindow, pickContextWindow } from './adapter.ts';
 export type { ImageRequestReader, QoderAdapterOptions } from './adapter.ts';
 export { QoderSession, QoderSessionManager } from './session.ts';
 export type { SessionModelPolicy, SessionRuntimeOptions } from './session.ts';

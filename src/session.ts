@@ -58,8 +58,18 @@ export interface SessionRuntimeOptions {
 /** Per-request model policy a warm session runs with. */
 export interface SessionModelPolicy {
   reasoningEffort?: string
-  /** The window the route publishes; the context meter divides by it. */
+  /**
+   * The window the route publishes to the harness, and the one the CLI is asked
+   * to run with.
+   */
   contextWindow?: number
+  /**
+   * The window the CLI will *actually* run with, when that differs from the
+   * declared one because the model does not advertise it. The CLI measures its
+   * context ratio against this, so it is the only honest multiplier for that
+   * ratio — see {@link QoderSession.usage}.
+   */
+  cliContextWindow?: number
 }
 
 /**
@@ -311,6 +321,13 @@ export class QoderSession {
    * number, so the meter and the ratio always describe one window.
    */
   private contextWindow: number | undefined
+  /**
+   * The window the CLI will actually run with, when that is known to differ
+   * from {@link contextWindow} because the model does not advertise the
+   * declared one. This is the denominator the CLI itself measures its context
+   * ratio against, so it is what the ratio must be multiplied by.
+   */
+  private cliContextWindow: number | undefined
 
   /** Per-session runtime knobs, resolved from the plugin config at creation. */
   private readonly toolResultTimeoutMs: number
@@ -344,7 +361,21 @@ export class QoderSession {
         includePartialMessages: true,
         resolveModel: () => ({
           model: this.model,
-          ...this.reasoningEffort === undefined ? {} : { parameters: { reasoningEffort: this.reasoningEffort } },
+          // The window travels with the model, because it is a property of the
+          // route rather than of one call. It has to be sent here: the CLI
+          // measures its `context_usage_ratio` against the window it is actually
+          // running with, so a deployment that declares 1M while the CLI still
+          // assumes the model's own 200K gets a ratio five times too large, and
+          // the meter that multiplies by the declared window inherits that error
+          // exactly (see `usage()` in this file).
+          ...this.reasoningEffort === undefined && this.contextWindow === undefined
+            ? {}
+            : {
+                parameters: {
+                  ...this.reasoningEffort === undefined ? {} : { reasoningEffort: this.reasoningEffort },
+                  ...this.contextWindow === undefined ? {} : { contextWindow: this.contextWindow },
+                },
+              },
         }),
         mcpServers: { [MCP_SERVER_NAME]: this.mcp },
         allowedMcpServerNames: [MCP_SERVER_NAME],
@@ -364,6 +395,7 @@ export class QoderSession {
     this.model = model
     this.reasoningEffort = policy?.reasoningEffort
     this.contextWindow = policy?.contextWindow
+    this.cliContextWindow = policy?.cliContextWindow
   }
 
   /** Record the host system prompt; effective only before the process spawns. */
@@ -639,14 +671,19 @@ export class QoderSession {
     }
     // The plan meters no tokens, but it does report how full this session's
     // context is, and that ratio comes from the inner model's own tokenizer.
-    // Expressed against the route's window — the number the harness divides by,
-    // so the percentage reads exactly the CLI's ratio — it replaces the
-    // character estimate below, which prices 4 chars per token and so under-reads
-    // Chinese by several times, delaying auto-compaction.
+    //
+    // It is a fraction of the window the CLI is RUNNING with, which is not
+    // always the window this plugin declared: the CLI only honours a window the
+    // model advertises, and silently keeps its own default otherwise. Multiplying
+    // by the declared window in that case inflates every reading by the ratio of
+    // the two (5x for a 1M override on a 200K-only model), so prefer the window
+    // the CLI actually uses and fall back to the declared one only when the
+    // catalog could not tell us.
+    const ratioWindow = this.cliContextWindow ?? this.contextWindow
     const ratio = real?.context_usage_ratio
-    if (typeof ratio === 'number' && ratio > 0 && typeof this.contextWindow === 'number' && this.contextWindow > 0) {
+    if (typeof ratio === 'number' && ratio > 0 && typeof ratioWindow === 'number' && ratioWindow > 0) {
       return {
-        inputTokens: Math.min(this.contextWindow, Math.max(1, Math.ceil(ratio * this.contextWindow))),
+        inputTokens: Math.min(ratioWindow, Math.max(1, Math.ceil(ratio * ratioWindow))),
         outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
         ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
       }

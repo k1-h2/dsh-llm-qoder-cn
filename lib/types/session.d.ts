@@ -32,8 +32,18 @@ export interface SessionRuntimeOptions {
 /** Per-request model policy a warm session runs with. */
 export interface SessionModelPolicy {
     reasoningEffort?: string;
-    /** The window the route publishes; the context meter divides by it. */
+    /**
+     * The window the route publishes to the harness, and the one the CLI is asked
+     * to run with.
+     */
     contextWindow?: number;
+    /**
+     * The window the CLI will *actually* run with, when that differs from the
+     * declared one because the model does not advertise it. The CLI measures its
+     * context ratio against this, so it is the only honest multiplier for that
+     * ratio — see {@link QoderSession.usage}.
+     */
+    cliContextWindow?: number;
 }
 /**
  * One user-turn content block on the streaming-input channel. Text is the
@@ -164,6 +174,13 @@ export declare class QoderSession {
      * number, so the meter and the ratio always describe one window.
      */
     private contextWindow;
+    /**
+     * The window the CLI will actually run with, when that is known to differ
+     * from {@link contextWindow} because the model does not advertise the
+     * declared one. This is the denominator the CLI itself measures its context
+     * ratio against, so it is what the ratio must be multiplied by.
+     */
+    private cliContextWindow;
     /** Per-session runtime knobs, resolved from the plugin config at creation. */
     private readonly toolResultTimeoutMs;
     private readonly abortGraceMs;

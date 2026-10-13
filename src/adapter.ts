@@ -118,6 +118,32 @@ function largestWindow(available: readonly number[] | undefined): number | undef
   return Math.max(...available)
 }
 
+/**
+ * The window the CLI will actually run this route with.
+ *
+ * Not the same thing as the window the harness is told about. A deployment may
+ * declare any window it likes — `modelContextWindows` accepts arbitrary numbers
+ * — but the CLI only honours one the model advertises in
+ * `availableContextWindows`; anything else it silently ignores and keeps its own
+ * default. Since the CLI measures `context_usage_ratio` against the window it is
+ * really using, this is the only correct multiplier for that ratio: using the
+ * declared window instead inflates every reading by
+ * `declared / actually-honoured` (5x for a 1M override on a 200K-only model).
+ *
+ * @param live - the live catalog entry, when the CLI answered.
+ * @param declared - the window this route publishes to the harness.
+ * @returns the window the CLI runs with, or undefined when unknown.
+ */
+export function cliContextWindow(
+  live: { maxInputTokens?: number, defaultContextWindow?: number, availableContextWindows?: readonly number[] } | undefined,
+  declared: number,
+): number | undefined {
+  if (live === undefined) return undefined
+  const available = live.availableContextWindows
+  if (available !== undefined && available.includes(declared)) return declared
+  return live.defaultContextWindow ?? largestWindow(available) ?? live.maxInputTokens
+}
+
 function modelInfo(provider: string, entry: { id: string, name: string, description?: string, isVl?: boolean }): LlmModelInfo {
   return {
     provider,
@@ -176,6 +202,12 @@ interface CallGeneration {
   readonly info: LlmResolvedModelInfo
   /** Whether the resolved route accepts image input, per that same resolution. */
   readonly vision: boolean
+  /**
+   * The window the CLI will run this route with. Distinct from
+   * `info.context.contextWindow`, which is what the harness was told; the two
+   * differ when the declared window is one the model does not advertise.
+   */
+  readonly cliContextWindow: number | undefined
 }
 
 /**
@@ -403,7 +435,14 @@ export class QoderAdapter extends LlmAdapter {
   /** Resolve the exact route once and derive the capability facts from it. */
   private async capture(provider: string, model: string, signal?: AbortSignal): Promise<CallGeneration> {
     const info = await this.resolveModel(provider, model, signal)
-    return { info, vision: info.inputModalities?.includes('image') === true }
+    const target = resolveQoderModelId(model, this.modelAliases)
+    const live = (await this.catalog.liveModels()).find(entry => entry.value === target)
+    const declared = info.context?.contextWindow
+    return {
+      info,
+      vision: info.inputModalities?.includes('image') === true,
+      cliContextWindow: declared === undefined ? undefined : cliContextWindow(live, declared),
+    }
   }
 
   private async *dispatch(options: GenerateOptions, generation: CallGeneration): AsyncGenerator<StreamChunk> {
@@ -421,14 +460,19 @@ export class QoderAdapter extends LlmAdapter {
     }
     const sessionId = String(options.sessionId)
     // The seam carries no per-request context window: the route's capacity comes
-    // from resolveModel. Handing that same window to the session gives the
-    // meter one denominator for both the CLI's context ratio and the harness
-    // percentage, so the two can never describe different windows.
+    // Two different windows, deliberately kept apart:
+    //  - `contextWindow` is what the harness is told and divides its percentage
+    //    by (the user's choice, when they made one).
+    //  - `cliContextWindow` is what the CLI will actually run with, and is
+    //    therefore the only honest denominator for its own context ratio. The
+    //    CLI ignores a declared window the model does not advertise, so these
+    //    two disagree exactly when the declaration is not honoured — and using
+    //    the declared one there inflates every reading.
+    const declaredWindow = generation.info.context?.contextWindow
     const policy = {
       ...options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort },
-      ...generation.info.context?.contextWindow === undefined
-        ? {}
-        : { contextWindow: generation.info.context.contextWindow },
+      ...declaredWindow === undefined ? {} : { contextWindow: declaredWindow },
+      ...generation.cliContextWindow === undefined ? {} : { cliContextWindow: generation.cliContextWindow },
     }
     let session = this.sessions.forSession(sessionId, model)
     if (session.fedMessages === undefined) {

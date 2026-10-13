@@ -22,7 +22,8 @@ import { qoderCliOptions } from './cli.ts'
 import { jsonSchemaToShape } from './jsonschema.ts'
 import type { Live } from './live.ts'
 import { readLive } from './live.ts'
-import { feedImageRefs, feedTextLength, renderInitialFeed } from './render.ts'
+import { feedImageRefs, feedTextLength, feedWideCharCount, renderInitialFeed } from './render.ts'
+import { countWideChars, estimateTextTokens } from './tokens.ts'
 
 /** MCP server name this adapter exposes host tools under. */
 export const MCP_SERVER_NAME = 'dsh-host'
@@ -298,6 +299,15 @@ export class QoderSession {
   private toolCalls: ToolUnderAssembly[] = []
   private outputChars = 0
   private reasoningChars = 0
+  /**
+   * How much of {@link outputChars}/{@link reasoningChars} is wide (CJK) text.
+   *
+   * Tracked separately because the two scripts price very differently, and the
+   * harness derives `tok/s` from the output tokens this session reports — a flat
+   * 4 chars/token would under-report Chinese by 2.26x and so under-report speed.
+   */
+  private outputWideChars = 0
+  private reasoningWideChars = 0
   /** Last real usage reported by the inner model for the active turn. */
   private lastUsage: SdkUsage | undefined
   /**
@@ -635,6 +645,8 @@ export class QoderSession {
     this.turnInputChars = 0
     this.outputChars = 0
     this.reasoningChars = 0
+    this.outputWideChars = 0
+    this.reasoningWideChars = 0
     // Pairing state is per turn: canUseTool ids are claimed by handlers within
     // the turn, and host callId mappings were consumed by deliverToolResults
     // before this stream started.
@@ -644,6 +656,26 @@ export class QoderSession {
   }
 
   private emit(chunk: StreamChunk): void { this.queue?.push({ kind: 'chunk', chunk }) }
+
+  /**
+   * Price this turn's generated text, by script rather than at a flat rate.
+   *
+   * The harness derives `tok/s` from the `outputTokens` an adapter reports, and
+   * `reasoningTokens` is a subset of it (the harness rejects a reading where it
+   * is not). Pricing both from the same counters keeps that invariant.
+   */
+  private outputUsage(): { outputTokens: number, reasoningTokens?: number } {
+    const outputTokens = Math.max(1, Math.ceil(estimateTextTokens(
+      this.outputChars + this.reasoningChars,
+      this.outputWideChars + this.reasoningWideChars,
+    )))
+    if (this.reasoningChars === 0) return { outputTokens }
+    const reasoningTokens = Math.max(1, Math.ceil(estimateTextTokens(this.reasoningChars, this.reasoningWideChars)))
+    // Monotonicity already guarantees this, but the harness drops the WHOLE
+    // reading when reasoning exceeds output, so the invariant is enforced here
+    // rather than left to a rounding edge.
+    return { outputTokens, reasoningTokens: Math.min(reasoningTokens, outputTokens) }
+  }
 
   private usage(): TokenUsage {
     // Three tiers, most authoritative first. Real token metering wins whenever
@@ -666,7 +698,9 @@ export class QoderSession {
         outputTokens: real.output_tokens,
         ...cacheRead > 0 ? { cacheReadTokens: cacheRead } : {},
         ...cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {},
-        ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
+        ...this.reasoningChars > 0
+          ? { reasoningTokens: Math.min(real.output_tokens, Math.ceil(estimateTextTokens(this.reasoningChars, this.reasoningWideChars))) }
+          : {},
       }
     }
     // The plan meters no tokens, but it does report how full this session's
@@ -683,33 +717,32 @@ export class QoderSession {
     const ratio = real?.context_usage_ratio
     if (typeof ratio === 'number' && ratio > 0 && typeof ratioWindow === 'number' && ratioWindow > 0) {
       return {
+        // Measured prompt-only: the ratio does NOT include the reply this turn
+        // is still producing, so adding `outputTokens` below cannot double-count.
         inputTokens: Math.min(ratioWindow, Math.max(1, Math.ceil(ratio * ratioWindow))),
-        outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
-        ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
+        ...this.outputUsage(),
       }
     }
-    // No metering available: price the request ourselves, the same way the
-    // harness token meter prices the surface (4 chars/token over the rendered
-    // conversation). Without this the context meter would read ~0% and
-    // auto-compaction would never fire.
+    // No metering available: price the request ourselves. Without this the
+    // context meter would read ~0% and auto-compaction would never fire.
     if (this.estimatedInputTokens !== undefined && this.estimatedInputTokens > 0) {
       return {
         inputTokens: this.estimatedInputTokens,
-        outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
-        ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
+        ...this.outputUsage(),
       }
     }
     return {
       inputTokens: Math.max(1, Math.ceil(this.turnInputChars / 4)),
-      outputTokens: Math.max(1, Math.ceil((this.outputChars + this.reasoningChars) / 4)),
-      ...this.reasoningChars > 0 ? { reasoningTokens: Math.ceil(this.reasoningChars / 4) } : {},
+      ...this.outputUsage(),
     }
   }
 
   /**
-   * Record the input-token estimate for the CURRENT request, priced the same
-   * way the harness token meter prices the surface: 4 chars per token over
-   * the rendered conversation (system + messages) the inner session receives.
+   * Record the input-token estimate for the CURRENT request, priced by script
+   * mix over the rendered conversation (system + messages) the inner session
+   * receives. The qoder CLI zeroes its per-stream usage frames, so without some
+   * estimate the harness context meter would read ~0% and auto-compaction would
+   * never trigger; the CLI's own context ratio is used whenever it reports one.
    * @param system - the host system prompt included in this request.
    * @param messages - the full host message list included in this request.
    */
@@ -717,7 +750,10 @@ export class QoderSession {
     const rendered = renderInitialFeed(system, messages)
     const imageTokens = feedImageRefs(rendered)
       .reduce((total, ref) => total + estimateImageTokens(ref.width, ref.height), 0)
-    this.estimatedInputTokens = Math.max(1, Math.ceil(feedTextLength(rendered) / 4) + imageTokens)
+    this.estimatedInputTokens = Math.max(
+      1,
+      Math.ceil(estimateTextTokens(feedTextLength(rendered), feedWideCharCount(rendered))) + imageTokens,
+    )
   }
 
   private endTurn(reason: FinishReason, usage?: TokenUsage): void {
@@ -800,6 +836,7 @@ export class QoderSession {
             }
             this.textBlock.text += delta.text
             this.outputChars += delta.text.length
+            this.outputWideChars += countWideChars(delta.text)
             this.emit({ type: 'text-delta', index: this.textBlock.index, text: delta.text })
           } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
             if (this.reasoningBlock === undefined) {
@@ -808,6 +845,7 @@ export class QoderSession {
             }
             this.reasoningBlock.text += delta.thinking
             this.reasoningChars += delta.thinking.length
+            this.reasoningWideChars += countWideChars(delta.thinking)
             this.emit({ type: 'reasoning-delta', index: this.reasoningBlock.index, text: delta.thinking })
           } else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string' && this.openTool !== undefined) {
             this.openTool.arguments += delta.partial_json
@@ -857,6 +895,7 @@ export class QoderSession {
         if (text.length > 0) {
           this.textBlock = { index: this.blockIndex++, text }
           this.outputChars += text.length
+          this.outputWideChars += countWideChars(text)
           this.emit({ type: 'block-start', index: this.textBlock.index, blockType: 'text' })
           this.emit({ type: 'text-delta', index: this.textBlock.index, text })
         }

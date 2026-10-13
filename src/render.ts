@@ -16,6 +16,7 @@
 import { fileHandleText, offloadedImageText, textOnlyImageText } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { countWideChars } from './tokens.ts'
 
 /** One element of a feed: literal text, or an image awaiting byte resolution. */
 export type FeedPart =
@@ -170,6 +171,17 @@ export function feedToText(feed: Feed): string {
 export function feedTextLength(feed: Feed): number {
   if (typeof feed === 'string') return feed.length
   return feed.reduce((total, part) => total + (part.type === 'text' ? part.text.length : 0), 0)
+}
+
+/**
+ * How many of a feed's literal characters are wide (CJK) text.
+ *
+ * The token estimate prices wide and narrow text at different rates, so a bare
+ * character count is not enough to price a feed that mixes Chinese and code.
+ */
+export function feedWideCharCount(feed: Feed): number {
+  if (typeof feed === 'string') return countWideChars(feed)
+  return feed.reduce((total, part) => total + (part.type === 'text' ? countWideChars(part.text) : 0), 0)
 }
 
 /**

@@ -59,6 +59,13 @@ export declare function feedToText(feed: Feed): string;
 /** Literal characters in a feed; images contribute their pixels, not text. */
 export declare function feedTextLength(feed: Feed): number;
 /**
+ * How many of a feed's literal characters are wide (CJK) text.
+ *
+ * The token estimate prices wide and narrow text at different rates, so a bare
+ * character count is not enough to price a feed that mixes Chinese and code.
+ */
+export declare function feedWideCharCount(feed: Feed): number;
+/**
  * Compose the first feed for a fresh session: backend role, the host system
  * prompt, and the existing conversation as compact context. Messages of the
  * current turn keep their image references; earlier ones are handles.

@@ -151,6 +151,15 @@ export declare class QoderSession {
     private toolCalls;
     private outputChars;
     private reasoningChars;
+    /**
+     * How much of {@link outputChars}/{@link reasoningChars} is wide (CJK) text.
+     *
+     * Tracked separately because the two scripts price very differently, and the
+     * harness derives `tok/s` from the output tokens this session reports — a flat
+     * 4 chars/token would under-report Chinese by 2.26x and so under-report speed.
+     */
+    private outputWideChars;
+    private reasoningWideChars;
     /** Last real usage reported by the inner model for the active turn. */
     private lastUsage;
     /**
@@ -243,11 +252,21 @@ export declare class QoderSession {
     close(): void;
     private resetTurnState;
     private emit;
+    /**
+     * Price this turn's generated text, by script rather than at a flat rate.
+     *
+     * The harness derives `tok/s` from the `outputTokens` an adapter reports, and
+     * `reasoningTokens` is a subset of it (the harness rejects a reading where it
+     * is not). Pricing both from the same counters keeps that invariant.
+     */
+    private outputUsage;
     private usage;
     /**
-     * Record the input-token estimate for the CURRENT request, priced the same
-     * way the harness token meter prices the surface: 4 chars per token over
-     * the rendered conversation (system + messages) the inner session receives.
+     * Record the input-token estimate for the CURRENT request, priced by script
+     * mix over the rendered conversation (system + messages) the inner session
+     * receives. The qoder CLI zeroes its per-stream usage frames, so without some
+     * estimate the harness context meter would read ~0% and auto-compaction would
+     * never trigger; the CLI's own context ratio is used whenever it reports one.
      * @param system - the host system prompt included in this request.
      * @param messages - the full host message list included in this request.
      */

@@ -45,6 +45,12 @@ const ENV: NodeJS.ProcessEnv = {
   PATH: '',
 }
 
+/** The switch a spawned CLI is handed so its usage frames carry real tokens. */
+const EXPOSED_USAGE: NodeJS.ProcessEnv = {
+  QODERCN_EXPOSE_TOKEN_USAGE: '1',
+  QODER_EXPOSE_TOKEN_USAGE: '1',
+}
+
 /** A machine holding exactly these files, seen through the lookup's own eyes. */
 function machine(files: readonly string[], overrides: Partial<CliLookup> = {}): CliLookup {
   const present = new Set(files.map(file => path.normalize(file)))
@@ -72,8 +78,12 @@ describe('qoder CLI lookup', () => {
 
   it('answers a native build with a path and no interpreter', () => {
     expect(resolveQoderCli(machine([NATIVE]))).toEqual({ path: NATIVE })
-    // Nothing to prepend to PATH: the binary is its own entry point.
-    expect(qoderCliOptions(machine([NATIVE]))).toEqual({ pathToQoderCLIExecutable: NATIVE })
+    // Nothing to prepend to PATH: the binary is its own entry point. The
+    // environment still rides along, because the metering switch does.
+    expect(qoderCliOptions(machine([NATIVE]))).toEqual({
+      pathToQoderCLIExecutable: NATIVE,
+      env: { ...process.env, ...EXPOSED_USAGE },
+    })
   })
 
   it('pairs an installed script with the Node that runs it', () => {
@@ -87,7 +97,22 @@ describe('qoder CLI lookup', () => {
     // interpreter's directory must be prepended to the environment the CLI
     // inherits, never take its place.
     const prefix = `${path.dirname(HOST_NODE)}${path.delimiter}`
-    expect(options.env).toEqual({ ...process.env, PATH: `${prefix}${process.env.PATH ?? ''}` })
+    expect(options.env).toEqual({ ...process.env, PATH: `${prefix}${process.env.PATH ?? ''}`, ...EXPOSED_USAGE })
+  })
+
+  it('asks the CLI to report its real token metering', () => {
+    // The CLI zeroes input/output and both cache buckets on every usage frame
+    // unless this switch is set, which leaves the harness with estimates and a
+    // structurally 0% cache hit. Both brand prefixes are set because either
+    // package can answer the lookup.
+    for (const lookup of [machine([CN_BUNDLE]), machine([NATIVE])]) {
+      const options = qoderCliOptions(lookup)
+      expect(options.env?.QODERCN_EXPOSE_TOKEN_USAGE).toBe('1')
+      expect(options.env?.QODER_EXPOSE_TOKEN_USAGE).toBe('1')
+    }
+    // A machine with no CLI keeps the SDK's default transport, which this
+    // module cannot hand an environment to.
+    expect(qoderCliOptions(machine([]))).toEqual({})
   })
 
   it('also recognizes the INTL package the SDK serves', () => {

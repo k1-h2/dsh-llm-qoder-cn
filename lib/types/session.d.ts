@@ -7,7 +7,7 @@
  * the parked promise so the inner model continues with the result in place.
  * @module dsh-llm-qoder/session
  */
-import type { ContentBlock, GenerateOptions, RequestMessage, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm';
+import type { ContentBlock, GenerateOptions, RequestMessage, StreamChunk, ToolSchema, TokenUsage } from '@deepseek-ai/dsh-llm';
 import type { Live } from './live.ts';
 /** MCP server name this adapter exposes host tools under. */
 export declare const MCP_SERVER_NAME = "dsh-host";
@@ -84,6 +84,104 @@ export type ResolvedImages = ReadonlyMap<string, {
     mediaType: string;
 }>;
 /**
+ * Structural view of the SDK usage this consumer forwards to the harness.
+ *
+ * Every field is optional because the CLI zeroes the four token counters unless
+ * it was started with the switch in `cli.ts`; `credits` and the context ratio
+ * survive either way. {@link meteredUsage} decides what is real.
+ */
+export interface SdkUsage {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    /** The CLI's own measurement of how full this session's context is. */
+    context_usage_ratio?: number | null;
+}
+/** Structural view of the SDK stream events this consumer cares about. */
+interface SdkStreamEvent {
+    type: string;
+    content_block?: {
+        type?: string;
+        id?: string;
+        name?: string;
+        input?: unknown;
+    };
+    delta?: {
+        type?: string;
+        text?: string;
+        thinking?: string;
+        partial_json?: string;
+    };
+    usage?: SdkUsage;
+    message?: {
+        content?: unknown;
+        usage?: SdkUsage;
+    };
+}
+/** The frame fields the request-usage sampler reads. */
+export interface UsageFrame {
+    type: string;
+    event?: SdkStreamEvent;
+    usage?: SdkUsage;
+}
+/**
+ * Whether a usage record carries real metering rather than the CLI's zero filler.
+ *
+ * The CLI attaches a usage record to several frames and leaves the four token
+ * counters at zero on all but one kind; a real request always consumed a prompt
+ * and produced output, so at least one counter being positive is the whole test.
+ */
+export declare function carriesTokens(usage: SdkUsage): boolean;
+/**
+ * The occupancy sample one arriving frame may contribute, if any.
+ *
+ * Exactly one carrier may: the `message_delta` emitted when a provider request
+ * finishes, whose usage describes that request's prompt — which is precisely
+ * what context occupancy means. The other carriers are traps, confirmed against
+ * a live CLI with a tool the inner model calls four times in one turn:
+ *
+ *  - `message_start`, and the assembled `assistant` message, report all four
+ *    counters as zero; a request's numbers exist only once it finishes.
+ *  - the `result` frame reports the WHOLE inner turn's total, summed over every
+ *    provider request that turn made. One host step is one request, but an inner
+ *    turn ends only when the model stops calling tools, so a long agentic run
+ *    reports a multiple of any real prompt — that four-request turn ended at
+ *    `input_tokens` 2 921 where each request had used 608–837. Taking that total
+ *    as the session's occupancy pegged the harness context meter at 100%
+ *    (9.8M against a 1M window) and latched it there.
+ *
+ * @param message - one arriving SDK message.
+ * @returns the usage to sample, or undefined when this frame may not supply one.
+ */
+export declare function requestUsageSample(message: UsageFrame): SdkUsage | undefined;
+/**
+ * One frame's own metering, translated into the harness's token buckets.
+ *
+ * Three rules, each measured against a live CLI rather than inferred:
+ *
+ * 1. `input_tokens` IS the whole prompt, cache included. The CLI measures its
+ *    `context_usage_ratio` as `input_tokens / window` (a probe: 9 811 input at
+ *    a 200 000 window → exactly 0.049055) and subtracts the cached part
+ *    afterwards for its own telemetry — so the harness's four buckets, which
+ *    are disjoint, have to take both cache halves back out of `inputTokens`.
+ * 2. Both cache buckets are always reported, zero included. The harness shows a
+ *    turn's usage only when its accounting is complete: a missing cache bucket
+ *    with no `totalTokens` to prove the sum makes the whole disclosure
+ *    unavailable, so omitting a zero would hide every per-turn usage row.
+ * 3. `totalTokens` is the sum of the four buckets, so the harness's
+ *    consistency check (`total - output == input + cacheRead + cacheWrite`)
+ *    holds by construction.
+ *
+ * @param real - the CLI's usage frame, or undefined when it reported none.
+ * @param reasoning - the local reasoning estimate, clamped inside the provider's
+ *   own output total (the harness drops a reading whose reasoning exceeds it).
+ * @returns the harness usage, or undefined when the frame carries no metering.
+ */
+export declare function meteredUsage(real: SdkUsage | undefined, reasoning: (meteredOutput: number) => {
+    reasoningTokens?: number;
+}): TokenUsage | undefined;
+/**
  * The host tool runtime dispatches by the bare host name; the inner model
  * only ever sees the namespaced MCP form, so strip the prefix on the way out.
  */
@@ -156,7 +254,12 @@ export declare class QoderSession {
      * {@link TurnOutputAccounting} for why the last one matters.
      */
     private readonly output;
-    /** Last real usage reported by the inner model for the active turn. */
+    /**
+     * Metering of the last provider request that finished in the active turn.
+     *
+     * Never the `result` frame's usage, which totals the whole inner turn across
+     * every request it made — see {@link requestUsageSample}.
+     */
     private lastUsage;
     /**
      * The active turn's feed as plain text, when that feed carries image bytes.
@@ -165,12 +268,12 @@ export declare class QoderSession {
      */
     private feedFallback;
     /**
-     * Session-level input token estimate for the CURRENT request, priced the
-     * same way the harness token meter prices the surface (4 chars per token
-     * on the rendered conversation the inner session actually receives). The
-     * qoder CLI zeroes its per-stream usage frames, so without some estimate the
-     * harness context meter would read ~0% and auto-compaction would never
-     * trigger; the CLI's own context ratio is used whenever it reports one.
+     * Session-level input token estimate for the CURRENT request, priced by
+     * script mix over the rendered conversation the inner session actually
+     * receives. It is the last-resort tier of {@link usage}: a turn whose frames
+     * carry no metering at all would otherwise read ~0% on the context meter and
+     * never trigger auto-compaction, and the CLI's own context ratio is preferred
+     * over this whenever the turn reported one.
      */
     private estimatedInputTokens;
     /**
@@ -260,11 +363,22 @@ export declare class QoderSession {
     private outputUsage;
     private usage;
     /**
+     * One estimated turn reading, shaped exactly like a metered one.
+     *
+     * The cache buckets are present and zero rather than omitted: this estimate
+     * prices the prompt as a single uncached block, and a missing bucket would
+     * make the harness withhold the turn's usage disclosure entirely.
+     *
+     * @param inputTokens - the estimated prompt size, uncached by definition.
+     * @returns the harness usage for the turn.
+     */
+    private estimatedUsage;
+    /**
      * Record the input-token estimate for the CURRENT request, priced by script
      * mix over the rendered conversation (system + messages) the inner session
-     * receives. The qoder CLI zeroes its per-stream usage frames, so without some
-     * estimate the harness context meter would read ~0% and auto-compaction would
-     * never trigger; the CLI's own context ratio is used whenever it reports one.
+     * receives. This is the fallback {@link usage} reaches for only when a turn
+     * reported no metering and no context ratio — without it such a turn would
+     * read ~0% on the context meter and never trigger auto-compaction.
      * @param system - the host system prompt included in this request.
      * @param messages - the full host message list included in this request.
      */
@@ -333,3 +447,4 @@ export declare class QoderSessionManager {
     /** One-shot turn with no warm state: side channels and cold rebuilds. */
     coldStream(options: GenerateOptions, prompt: string, model?: string): AsyncGenerator<StreamChunk>;
 }
+export {};

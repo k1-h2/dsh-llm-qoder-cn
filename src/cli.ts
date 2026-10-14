@@ -34,6 +34,28 @@ import type { Options } from '@qodercn-ai/qodercn-agent-sdk'
 /** The query options that move a session onto the CLI's own process. */
 export type QoderCliOptions = Pick<Options, 'pathToQoderCLIExecutable' | 'executable' | 'env'>
 
+/**
+ * The switch that makes the CLI report its real token metering.
+ *
+ * The CLI prices every provider request, but before a usage record leaves the
+ * process it zeroes `input_tokens`, `output_tokens` and both cache buckets
+ * unless this switch is on — its own bundle guards the real values with
+ * `if (options?.exposeTokenCounts || tokenUsageRequested())`, and otherwise
+ * emits `{ input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0,
+ * cache_read_input_tokens: 0 }` while keeping `credits` and the context ratio.
+ * That is why every counter the harness shows is an estimate here, and why
+ * `缓存命中` reads 0% no matter how much of a prompt the cache served.
+ *
+ * The names are the CLI's own env-catalog entries (`ENV_EXPOSE_TOKEN_USAGE`),
+ * brand-prefixed per build — the CN CLI reads `QODERCN_…`, the international
+ * one `QODER_…` — and both are set because which build answers is the lookup's
+ * decision, not this module's. The value is read as a boolean (`1`/`true`/`yes`).
+ */
+const EXPOSE_TOKEN_USAGE: NodeJS.ProcessEnv = {
+  QODERCN_EXPOSE_TOKEN_USAGE: '1',
+  QODER_EXPOSE_TOKEN_USAGE: '1',
+}
+
 /** A CLI entry that can be spawned, plus the directory of the Node that runs it. */
 export interface QoderCli {
   /** Path to the CLI: a native binary, or a script the Node below runs. */
@@ -105,18 +127,23 @@ export function resolveQoderCli(lookup: CliLookup = {}): QoderCli | undefined {
 export function qoderCliOptions(lookup: CliLookup = {}): QoderCliOptions {
   const cli = resolveQoderCli(lookup)
   if (cli === undefined) return {}
-  if (cli.nodeDir === undefined) return { pathToQoderCLIExecutable: cli.path }
+  // The SDK reads `env` as the child's whole environment rather than a delta, so
+  // every branch hands over the environment the CLI would have inherited anyway
+  // — handing over `PATH` alone would strip the CLI of the directories it keeps
+  // its own state in — plus the switch that unzeroes its token metering.
+  if (cli.nodeDir === undefined) {
+    return {
+      pathToQoderCLIExecutable: cli.path,
+      env: { ...process.env, ...EXPOSE_TOKEN_USAGE },
+    }
+  }
   return {
     pathToQoderCLIExecutable: cli.path,
     // A bare name, because that is what the SDK's option accepts: the child
     // resolves it against PATH, so the interpreter's own directory is put in
     // front of the inherited PATH instead of being spelled out here.
     executable: 'node',
-    // The SDK reads `env` as the child's whole environment rather than a delta,
-    // so this is the environment the CLI would have inherited anyway with the
-    // interpreter's directory prepended to PATH — handing over PATH alone would
-    // strip the CLI of the directories it keeps its own state in.
-    env: { ...process.env, PATH: `${cli.nodeDir}${path.delimiter}${process.env.PATH ?? ''}` },
+    env: { ...process.env, PATH: `${cli.nodeDir}${path.delimiter}${process.env.PATH ?? ''}`, ...EXPOSE_TOKEN_USAGE },
   }
 }
 

@@ -202,8 +202,14 @@ interface ToolUnderAssembly {
   arguments: string
 }
 
-/** Structural view of the SDK usage this consumer forwards to the harness. */
-interface SdkUsage {
+/**
+ * Structural view of the SDK usage this consumer forwards to the harness.
+ *
+ * Every field is optional because the CLI zeroes the four token counters unless
+ * it was started with the switch in `cli.ts`; `credits` and the context ratio
+ * survive either way. {@link meteredUsage} decides what is real.
+ */
+export interface SdkUsage {
   input_tokens?: number | null
   output_tokens?: number | null
   cache_read_input_tokens?: number | null
@@ -221,14 +227,103 @@ interface SdkStreamEvent {
   message?: { content?: unknown, usage?: SdkUsage }
 }
 
-/** Structural view of the SDK messages this consumer cares about. */
-interface SdkMessage {
+/** The frame fields the request-usage sampler reads. */
+export interface UsageFrame {
   type: string
-  subtype?: string
   event?: SdkStreamEvent
-  message?: { content?: Array<{ type?: string, text?: string }>, usage?: SdkUsage }
   usage?: SdkUsage
+}
+
+/** Structural view of the SDK messages this consumer cares about. */
+interface SdkMessage extends UsageFrame {
+  subtype?: string
+  message?: { content?: Array<{ type?: string, text?: string }>, usage?: SdkUsage }
   errors?: unknown
+}
+
+/**
+ * Whether a usage record carries real metering rather than the CLI's zero filler.
+ *
+ * The CLI attaches a usage record to several frames and leaves the four token
+ * counters at zero on all but one kind; a real request always consumed a prompt
+ * and produced output, so at least one counter being positive is the whole test.
+ */
+export function carriesTokens(usage: SdkUsage): boolean {
+  const positive = (value: number | null | undefined): boolean => typeof value === 'number' && value > 0
+  return positive(usage.input_tokens) || positive(usage.output_tokens)
+    || positive(usage.cache_read_input_tokens) || positive(usage.cache_creation_input_tokens)
+}
+
+/**
+ * The occupancy sample one arriving frame may contribute, if any.
+ *
+ * Exactly one carrier may: the `message_delta` emitted when a provider request
+ * finishes, whose usage describes that request's prompt — which is precisely
+ * what context occupancy means. The other carriers are traps, confirmed against
+ * a live CLI with a tool the inner model calls four times in one turn:
+ *
+ *  - `message_start`, and the assembled `assistant` message, report all four
+ *    counters as zero; a request's numbers exist only once it finishes.
+ *  - the `result` frame reports the WHOLE inner turn's total, summed over every
+ *    provider request that turn made. One host step is one request, but an inner
+ *    turn ends only when the model stops calling tools, so a long agentic run
+ *    reports a multiple of any real prompt — that four-request turn ended at
+ *    `input_tokens` 2 921 where each request had used 608–837. Taking that total
+ *    as the session's occupancy pegged the harness context meter at 100%
+ *    (9.8M against a 1M window) and latched it there.
+ *
+ * @param message - one arriving SDK message.
+ * @returns the usage to sample, or undefined when this frame may not supply one.
+ */
+export function requestUsageSample(message: UsageFrame): SdkUsage | undefined {
+  if (message.type !== 'stream_event') return undefined
+  const usage = message.event?.usage ?? message.event?.message?.usage
+  return usage !== undefined && carriesTokens(usage) ? usage : undefined
+}
+
+/**
+ * One frame's own metering, translated into the harness's token buckets.
+ *
+ * Three rules, each measured against a live CLI rather than inferred:
+ *
+ * 1. `input_tokens` IS the whole prompt, cache included. The CLI measures its
+ *    `context_usage_ratio` as `input_tokens / window` (a probe: 9 811 input at
+ *    a 200 000 window → exactly 0.049055) and subtracts the cached part
+ *    afterwards for its own telemetry — so the harness's four buckets, which
+ *    are disjoint, have to take both cache halves back out of `inputTokens`.
+ * 2. Both cache buckets are always reported, zero included. The harness shows a
+ *    turn's usage only when its accounting is complete: a missing cache bucket
+ *    with no `totalTokens` to prove the sum makes the whole disclosure
+ *    unavailable, so omitting a zero would hide every per-turn usage row.
+ * 3. `totalTokens` is the sum of the four buckets, so the harness's
+ *    consistency check (`total - output == input + cacheRead + cacheWrite`)
+ *    holds by construction.
+ *
+ * @param real - the CLI's usage frame, or undefined when it reported none.
+ * @param reasoning - the local reasoning estimate, clamped inside the provider's
+ *   own output total (the harness drops a reading whose reasoning exceeds it).
+ * @returns the harness usage, or undefined when the frame carries no metering.
+ */
+export function meteredUsage(
+  real: SdkUsage | undefined,
+  reasoning: (meteredOutput: number) => { reasoningTokens?: number },
+): TokenUsage | undefined {
+  if (real === undefined
+    || typeof real.input_tokens !== 'number'
+    || typeof real.output_tokens !== 'number'
+    || (real.input_tokens <= 0 && real.output_tokens <= 0)) return undefined
+  const cacheReadTokens = typeof real.cache_read_input_tokens === 'number' ? real.cache_read_input_tokens : 0
+  const cacheWriteTokens = typeof real.cache_creation_input_tokens === 'number' ? real.cache_creation_input_tokens : 0
+  const inputTokens = Math.max(0, real.input_tokens - cacheReadTokens - cacheWriteTokens)
+  const outputTokens = real.output_tokens
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens: inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens,
+    ...reasoning(outputTokens),
+  }
 }
 
 /**
@@ -318,7 +413,12 @@ export class QoderSession {
    * {@link TurnOutputAccounting} for why the last one matters.
    */
   private readonly output = new TurnOutputAccounting()
-  /** Last real usage reported by the inner model for the active turn. */
+  /**
+   * Metering of the last provider request that finished in the active turn.
+   *
+   * Never the `result` frame's usage, which totals the whole inner turn across
+   * every request it made — see {@link requestUsageSample}.
+   */
   private lastUsage: SdkUsage | undefined
   /**
    * The active turn's feed as plain text, when that feed carries image bytes.
@@ -327,12 +427,12 @@ export class QoderSession {
    */
   private feedFallback: string | undefined
   /**
-   * Session-level input token estimate for the CURRENT request, priced the
-   * same way the harness token meter prices the surface (4 chars per token
-   * on the rendered conversation the inner session actually receives). The
-   * qoder CLI zeroes its per-stream usage frames, so without some estimate the
-   * harness context meter would read ~0% and auto-compaction would never
-   * trigger; the CLI's own context ratio is used whenever it reports one.
+   * Session-level input token estimate for the CURRENT request, priced by
+   * script mix over the rendered conversation the inner session actually
+   * receives. It is the last-resort tier of {@link usage}: a turn whose frames
+   * carry no metering at all would otherwise read ~0% on the context meter and
+   * never trigger auto-compaction, and the CLI's own context ratio is preferred
+   * over this whenever the turn reported one.
    */
   private estimatedInputTokens: number | undefined
   /**
@@ -679,69 +779,66 @@ export class QoderSession {
   }
 
   private usage(): TokenUsage {
-    // Three tiers, most authoritative first. Real token metering wins whenever
-    // the CLI reports it, so a plan or CLI build that DOES meter — including
-    // cache reads — surfaces instead of being masked. This subscription does
-    // not: probed under both transports, `input_tokens`, `output_tokens`, every
-    // cache field, `total_cost_usd` and `modelUsage` all stay 0 across turns.
-    // What it does report is a context ratio, then a character estimate.
-    const real = this.lastUsage
-    if (real !== undefined
-      && typeof real.input_tokens === 'number'
-      && typeof real.output_tokens === 'number'
-      && (real.input_tokens > 0 || real.output_tokens > 0)) {
-      const cacheRead = typeof real.cache_read_input_tokens === 'number' ? real.cache_read_input_tokens : 0
-      const cacheWrite = typeof real.cache_creation_input_tokens === 'number' ? real.cache_creation_input_tokens : 0
-      return {
-        // The SDK's input_tokens includes cache reads/writes, so subtract them
-        // into disjoint buckets, matching the harness TokenUsage convention.
-        inputTokens: Math.max(0, real.input_tokens - cacheRead - cacheWrite),
-        outputTokens: real.output_tokens,
-        ...cacheRead > 0 ? { cacheReadTokens: cacheRead } : {},
-        ...cacheWrite > 0 ? { cacheWriteTokens: cacheWrite } : {},
-        ...this.output.reasoningTokensWithin(real.output_tokens),
-      }
-    }
-    // The plan meters no tokens, but it does report how full this session's
-    // context is, and that ratio comes from the inner model's own tokenizer.
+    // Two tiers, most authoritative first. The CLI's own metering is now
+    // available, because the child is started with the switch that keeps it from
+    // zeroing the counters on the way out (`cli.ts`) — including the cache
+    // buckets, which is the only thing that can make `缓存命中` mean anything.
+    const metered = meteredUsage(this.lastUsage, output => this.output.reasoningTokensWithin(output))
+    if (metered !== undefined) return metered
+    // Below this line the turn carried no usable metering at all: a CLI build
+    // that predates the switch, the in-process worker transport that cannot be
+    // handed an environment, or a turn that died before its result frame.
     //
-    // It is a fraction of the window the CLI is RUNNING with, which is not
-    // always the window this plugin declared: the CLI only honours a window the
-    // model advertises, and silently keeps its own default otherwise. Multiplying
-    // by the declared window in that case inflates every reading by the ratio of
-    // the two (5x for a 1M override on a 200K-only model), so prefer the window
-    // the CLI actually uses and fall back to the declared one only when the
-    // catalog could not tell us.
+    // Such a session still reports how full its context is, and that ratio comes
+    // from the inner model's own tokenizer. It is a fraction of the window the
+    // CLI is RUNNING with, which is not always the window this plugin declared:
+    // the CLI only honours a window the model advertises, and silently keeps its
+    // own default otherwise. Multiplying by the declared window in that case
+    // inflates every reading by the ratio of the two (5x for a 1M override on a
+    // 200K-only model), so prefer the window the CLI actually uses and fall back
+    // to the declared one only when the catalog could not tell us.
     const ratioWindow = this.cliContextWindow ?? this.contextWindow
-    const ratio = real?.context_usage_ratio
+    const ratio = this.lastUsage?.context_usage_ratio
     if (typeof ratio === 'number' && ratio > 0 && typeof ratioWindow === 'number' && ratioWindow > 0) {
-      return {
-        // Measured prompt-only: the ratio does NOT include the reply this turn
-        // is still producing, so adding `outputTokens` below cannot double-count.
-        inputTokens: Math.min(ratioWindow, Math.max(1, Math.ceil(ratio * ratioWindow))),
-        ...this.outputUsage(),
-      }
+      // Measured prompt-only: the ratio does NOT include the reply this turn is
+      // still producing, so adding `outputTokens` below cannot double-count.
+      return this.estimatedUsage(Math.min(ratioWindow, Math.max(1, Math.ceil(ratio * ratioWindow))))
     }
     // No metering available: price the request ourselves. Without this the
     // context meter would read ~0% and auto-compaction would never fire.
     if (this.estimatedInputTokens !== undefined && this.estimatedInputTokens > 0) {
-      return {
-        inputTokens: this.estimatedInputTokens,
-        ...this.outputUsage(),
-      }
+      return this.estimatedUsage(this.estimatedInputTokens)
     }
+    return this.estimatedUsage(Math.max(1, Math.ceil(this.turnInputChars / 4)))
+  }
+
+  /**
+   * One estimated turn reading, shaped exactly like a metered one.
+   *
+   * The cache buckets are present and zero rather than omitted: this estimate
+   * prices the prompt as a single uncached block, and a missing bucket would
+   * make the harness withhold the turn's usage disclosure entirely.
+   *
+   * @param inputTokens - the estimated prompt size, uncached by definition.
+   * @returns the harness usage for the turn.
+   */
+  private estimatedUsage(inputTokens: number): TokenUsage {
+    const output = this.outputUsage()
     return {
-      inputTokens: Math.max(1, Math.ceil(this.turnInputChars / 4)),
-      ...this.outputUsage(),
+      inputTokens,
+      ...output,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: inputTokens + output.outputTokens,
     }
   }
 
   /**
    * Record the input-token estimate for the CURRENT request, priced by script
    * mix over the rendered conversation (system + messages) the inner session
-   * receives. The qoder CLI zeroes its per-stream usage frames, so without some
-   * estimate the harness context meter would read ~0% and auto-compaction would
-   * never trigger; the CLI's own context ratio is used whenever it reports one.
+   * receives. This is the fallback {@link usage} reaches for only when a turn
+   * reported no metering and no context ratio — without it such a turn would
+   * read ~0% on the context meter and never trigger auto-compaction.
    * @param system - the host system prompt included in this request.
    * @param messages - the full host message list included in this request.
    */
@@ -789,9 +886,10 @@ export class QoderSession {
     if (message.type === 'stream_event') {
       const event = message.event
       if (event === undefined) return
-      // message_start / message_delta carry the running usage for the step.
-      if (event.usage !== undefined) this.lastUsage = event.usage
-      else if (event.message?.usage !== undefined) this.lastUsage = event.message.usage
+      // Only a finished request may move the occupancy sample; see
+      // {@link requestUsageSample} for which frames carry what.
+      const sample = requestUsageSample(message)
+      if (sample !== undefined) this.lastUsage = sample
       switch (event.type) {
         case 'content_block_start': {
           const block = event.content_block
@@ -894,8 +992,9 @@ export class QoderSession {
       return
     }
     if (message.type === 'assistant') {
-      // Fallback turns (no partial events) still carry the real usage.
-      if (message.message?.usage !== undefined) this.lastUsage = message.message.usage
+      // No usage is taken from an assembled message: it reports zeros (see
+      // {@link requestUsageSample}), and the request frame already supplied the
+      // turn's metering.
       // Fallback for turns that streamed no partial events: price whatever the
       // finished message carries, including any tool-call arguments.
       if (this.textBlock === undefined && this.toolCalls.length === 0) {
@@ -922,9 +1021,10 @@ export class QoderSession {
       return
     }
     if (message.type === 'result') {
-      // The result frame carries the authoritative final usage (the stream
-      // events' usage is cumulative and often zeroed until the last delta).
-      if (message.usage !== undefined) this.lastUsage = message.usage
+      // The result frame's usage is NOT sampled: it totals the whole inner turn
+      // across every provider request, which on a long agentic run is many times
+      // the live prompt — see {@link requestUsageSample}. This frame still ends
+      // the turn; the occupancy sample stays the last finished request's.
       if (this.abortPending) {
         this.endTurn({ kind: 'aborted', failure: { message: 'qoder turn aborted by host', code: 'ABORTED' } })
         return

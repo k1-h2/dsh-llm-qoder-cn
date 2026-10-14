@@ -121,15 +121,52 @@ qoderclicn --list-models                # 列出订阅实际可用的模型
 
 ## 常见问题
 
-**缓存命中一直显示 0%？** 上游没有数据，不是映射错误。实测多轮会话逐帧检查，所有用量帧的
-`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`
-**全为 0**，`total_cost_usd` 与 `modelUsage` 也是 0。本插件能做的是 `usage()` **先读真实用量帧、
-读不到才回退**，这样上游一旦开始上报就会立刻显示出来。
+**缓存命中一直显示 0%？** v1.0.5 已修。根因不在映射：CLI 每轮都算出了真实用量，但在把用量帧
+送出来之前会**主动清零四个 token 计数**（`input_tokens` / `output_tokens` /
+`cache_read_input_tokens` / `cache_creation_input_tokens`），只留 `credits` 与
+`context_usage_ratio`；它自带一个开关（env 目录里的 `EXPOSE_TOKEN_USAGE`），打开后才原样送出。
+[`src/cli.ts`](./src/cli.ts) 现在把这个开关随子进程环境一起交给 CLI——CN 包读
+`QODERCN_EXPOSE_TOKEN_USAGE`，国际包读 `QODER_EXPOSE_TOKEN_USAGE`，两个都设，因为由哪个包应答
+是查找决定的。
 
-**上下文占用是按什么算的？** 上游虽然不报 token，但每帧都带 `context_usage_ratio`——它自己量出的
-「上下文用了多少」。本插件把它乘上窗口换成 token，再交给 DSH 的计量环。
+实测（本插件跑通，同一段前缀连续两轮）：
 
-这里有个坑（v1.0.1 踩过、v1.0.2 修）：**这个比率的分母是 CLI 实际运行的窗口，不是你配置的窗口**。
+| 轮 | CLI 报的 `input_tokens` | 其中 `cache_read` | 插件上报 | 界面 |
+|---|---|---|---|---|
+| 1 | 9 811 | 0 | 输入 9 811 / 输出 860 / 缓存 0 | 命中 0% |
+| 2 | 10 268 | 9 805 | 输入 881 / 缓存读 9 805 / 输出 100 | 命中 92% |
+
+第二轮那个 `input_tokens` 是**整个 prompt**（CLI 自己的 `context_usage_ratio` 就是
+`input_tokens ÷ 窗口`），缓存的那部分含在里面，所以 [`meteredUsage()`](./src/session.ts) 把两个
+cache 桶从 `inputTokens` 里减出去——DSH 的四个桶互不重叠，不减等于把缓存前缀算两遍。四个桶（含 0）
+与 `totalTokens` 也必须齐全：harness 只在记账完整时展示每轮用量行，少一个桶又没有 `totalTokens`
+佐证，整轮的用量详情都不显示。
+
+**哪个用量帧能信？** CLI 会把用量记录挂在**好几个**帧上，
+而只有一个是真的属于「这一次请求」：`message_delta`，即每次 provider 请求结束时发出的那一帧。
+其余三个都是坑——`message_start` 与组装后的 `assistant` 消息里的四个计数**恒为 0**（请求没结束前
+没有数）；`result` 帧则是**内层整轮的总和**，把这个回合里每一次 provider 请求的用量全部相加。
+
+一个宿主 step 只对应一次 provider 请求，但内层的一"轮"要等模型不再调用工具才结束——宿主工具每往返
+一次就是一次新请求，全部发生在同一个内层回合里。所以 `result` 帧的数在长 agentic 运行后会是真实
+prompt 的若干倍：实测一个让模型连调四次工具的回合，各请求分别用 608/705/771/837，`result` 帧报
+**2 921**。若把这个数当成当前上下文，长跑结束后 DSH 的上下文计量会被顶到
+`~9.8M / 1M`（100%）并一直挂着，直到下一次取样才回正（开发中确实这么踩过一次）。
+
+现在占用样本只由 [`requestUsageSample()`](./src/session.ts) 提供：仅接受带真实计数（至少一个桶 > 0）
+的 `stream_event` 帧，`assistant` 与 `result` 帧一律不采信。`contextUsageRatio` 仍是每请求的
+prompt 比率，所以回退路径不受影响。
+
+仍然退回估算的只有三种情况：CLI 版本早于这个开关、SDK 回退到进程内 worker transport（拿不到自定义
+环境）、某一轮在结果帧之前就结束了。那时 `usage()` 按「真实用量帧 → CLI 的 context 比率 → 字符
+估算」三级回退，上游一旦有数就立刻切过去。
+
+**上下文占用是按什么算的？** 拿到真实计量时就是 provider 自己数的**最后一次请求**的 prompt：
+`inputTokens + cacheRead + cacheWrite`，除以窗口。拿不到时，上游每帧仍带 `context_usage_ratio`
+——它自己量出的「上下文用了多少」——本插件把它乘上窗口换成 token，再交给 DSH 的计量环。
+
+这条回退路径上有个坑（v1.0.1 踩过、v1.0.2 修）：**这个比率的分母是 CLI 实际运行的窗口，
+不是你配置的窗口**。
 CLI 只接受模型自己声明的窗口（见目录里的 `availableContextWindows`），配一个它不支持的窗口会被
 **静默忽略**——例如给只支持 200K 的 `auto` 配 1M，CLI 仍按 200K 跑，若拿 1M 去乘就虚高 5 倍。
 所以插件现在分两个窗口：给 DSH 的是你配置的值，给比率做分母的是 `cliContextWindow()`
@@ -143,8 +180,9 @@ CLI 只接受模型自己声明的窗口（见目录里的 `availableContextWind
 与工具定义，约 120–200 token。环里「系统提示词 / 工具定义 / 对话消息」三项是 DSH 自己按
 `4 字符/token` 估的**本地分类**，合计会低于总数，这是正常的，不是虚高。
 
-**tok/s 为什么偏低？** 两个原因，v1.0.3 与 v1.0.4 各修一个。DSH 算
-`tok/s = 输出 token ÷ 解码耗时`，而输出 token 由本插件上报，所以**凡是模型生成的内容都必须计入**：
+**tok/s 为什么偏低？** DSH 算 `tok/s = 输出 token ÷ 解码耗时`，而输出 token 由本插件上报。
+v1.0.5 起这个数是 provider 自己数的 `output_tokens`（同一个计量开关），所以下面的估算修正只在拿不到
+计量时生效——**凡是模型生成的内容都必须计入**，估算那一侧曾是两个原因，v1.0.3 与 v1.0.4 各修一个：
 
 1. **换算率**（v1.0.3）。实测本后端的分词器：**中文 1.77 字符/token、英文 5.20 字符/token**，
    而原先统一按 `4 字符/token` 估，中文因此被低估 **2.26 倍**。现在按字符集分别计价。
@@ -168,6 +206,10 @@ CLI 只接受模型自己声明的窗口（见目录里的 `availableContextWind
 - **工具桥接**：宿主工具经进程内 MCP server 暴露给内层模型，qodercli 一次执行一个调用、宿主
   一次回传整轮结果，以 callId 配对；超过 `toolResultTimeoutSeconds` 取消该次调用。
 - **旁路请求**：标题生成、压缩摘要走冷启动一次性调用，不占用 warm 会话。
+- **真实计量**：CLI 默认把用量帧里的 token 计数清零，插件在启动子进程时带上它的
+  `EXPOSE_TOKEN_USAGE` 开关；总量、缓存命中与 tok/s 因此都是 provider 实测值，只有拿不到计量时才
+  按「context 比率 → 字符估算」兜底。占用样本只取自**每次请求结束**的那一帧（`requestUsageSample()`
+  ，见「哪个用量帧能信？」），内层整轮的合计值不参与上下文计算。
 - **溢出可恢复**：内层上下文超限按 `CONTEXT_WINDOW_EXCEEDED` 上报，交给 harness 自动压缩，
   而不是让整轮报废。
 

@@ -134,7 +134,7 @@ qoderclicn --list-models                # 列出订阅实际可用的模型
 | 轮 | CLI 报的 `input_tokens` | 其中 `cache_read` | 插件上报 | 界面 |
 |---|---|---|---|---|
 | 1 | 9 811 | 0 | 输入 9 811 / 输出 860 / 缓存 0 | 命中 0% |
-| 2 | 10 268 | 9 805 | 输入 881 / 缓存读 9 805 / 输出 100 | 命中 92% |
+| 2 | 10 686 | 9 805 | 输入 881 / 缓存读 9 805 / 输出 100 | 命中 92% |
 
 第二轮那个 `input_tokens` 是**整个 prompt**（CLI 自己的 `context_usage_ratio` 就是
 `input_tokens ÷ 窗口`），缓存的那部分含在里面，所以 [`meteredUsage()`](./src/session.ts) 把两个

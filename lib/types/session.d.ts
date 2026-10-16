@@ -191,6 +191,101 @@ export declare function gateTools(toolName: string, _input: unknown, options: {
     toolUseID?: string;
 }): Promise<unknown>;
 /**
+ * The tool-result bridge between the inner CLI and the host.
+ *
+ * qodercli announces a tool call twice, under two different identities:
+ * `canUseTool` receives the CLI's own tool-use id *before* the call runs, while
+ * the MCP `tools/call` handler that actually needs the host's result receives no
+ * id at all. The two arrive in the same order, so a FIFO pairs them — and the
+ * handler then parks under the exact id the host's result was filed under.
+ *
+ * ## Why that FIFO belongs to the session, not to a turn
+ *
+ * Measured against a live CLI, the handler can fire *after* the turn it belongs
+ * to has already ended. The host answers a tool call as soon as it sees the
+ * block, so the adapter's `deliverToolResults` files the result while nothing is
+ * parked yet, and only then does the CLI get around to dispatching the MCP call:
+ *
+ * ```
+ * 6198ms  [endTurn] kind=tool-calls
+ * 6198ms  [host] no parked handler -> BUFFERED under key=call_80d292a7…
+ * 6217ms  [mcp handler] ENTER | shifted toolUseId=undefined
+ * 6217ms  [mcp handler] PARKING under key=anonymous-1
+ * 14226ms [mcp handler] TIMED OUT after 8009ms
+ * ```
+ *
+ * Clearing the announcements at the turn boundary therefore threw away the very
+ * id the handler was about to claim. The handler fell through to a fallback key
+ * nothing could resolve, parked for the whole tool-result timeout, and the turn
+ * stalled — 120 s by default, which the user reads as "the model stopped
+ * answering" and works around by stopping the conversation and resending. The
+ * stall is probabilistic because a *slow* host tool (a shell command) parks its
+ * handler before the turn ends and takes the other path, while a fast one
+ * (`read`, `ask_user_question`) loses the race.
+ *
+ * Announcements are therefore dropped only where the CLI provably cancels its
+ * pending dispatch — {@link forgetUnclaimed} on an aborted or failed turn, and
+ * {@link clear} when the session dies.
+ */
+export declare class ToolResultPairing {
+    /** Handlers parked under the tool-use id their host result will arrive as. */
+    private readonly parked;
+    /** Results that arrived before their handler did, by tool-use id. */
+    private readonly buffered;
+    /** Tool-use ids `canUseTool` allowed, in execution order, awaiting a handler. */
+    private readonly announced;
+    /**
+     * Host callId (`qoder-N`) → qodercli tool-use id, from the content-block ids.
+     *
+     * Keyed by a per-session nonce, so a stale entry can never be reached by a
+     * later call and is safe to keep across turns; it is dropped with the session.
+     */
+    private readonly hostCallIds;
+    /** Suffix for a handler that claimed no announcement, so keys stay distinct. */
+    private anonymous;
+    /** Record the tool-use id `canUseTool` allowed, in execution order. */
+    announce(toolUseId: string): void;
+    /** Record which tool-use id a model-emitted tool-call block belongs to. */
+    mapHostCall(hostCallId: string, toolUseId: string): void;
+    /**
+     * Hand one MCP handler the result the host already delivered, or park it until
+     * the host delivers one.
+     *
+     * @param timeoutMs - how long a parked handler waits before failing the call.
+     * @returns the host's result, or a cancellation payload on timeout.
+     */
+    claim(timeoutMs: number): Promise<ToolResultPayload>;
+    /**
+     * File one host tool result against the call it answers.
+     *
+     * Resolves the handler already parked under that tool-use id, or buffers the
+     * result for the handler that has not fired yet — which is the ordinary case
+     * for a host tool that returns quickly.
+     *
+     * @param hostCallId - the host-facing call id from the tool-result message.
+     * @param payload - the rendered result.
+     */
+    deliver(hostCallId: string, payload: ToolResultPayload): void;
+    /**
+     * Release every parked handler: the host started a fresh user turn while their
+     * calls were still outstanding, so those calls can never be answered.
+     */
+    cancelParked(): void;
+    /**
+     * Drop announcements no handler can still claim.
+     *
+     * An aborted or failed turn is one where the CLI cancels its pending tool
+     * dispatch, so an id it announced but never dispatched would otherwise shift
+     * the pairing of the NEXT turn's handler by one slot and park it under a key
+     * nothing resolves — reintroducing the very stall this class exists to fix.
+     */
+    forgetUnclaimed(): void;
+    /** Drop all pairing state; the session is being torn down. */
+    clear(): void;
+    /** How many handlers are waiting for a host result. */
+    get parkedCount(): number;
+}
+/**
  * One warm inner session. All mutation happens on the consumer fiber except
  * the documented turn lifecycle driven by {@link stream}.
  */
@@ -204,20 +299,11 @@ export declare class QoderSession {
      */
     private q;
     /**
-     * Tool-call pairing state. qodercli asks `canUseTool` (with the qodercli
-     * tool-use id) once per call in execution order, then sends the MCP message;
-     * the host sees tool calls as content blocks and delivers all results up
-     * front on the next request. Tool-use ids therefore arrive in the handler in
-     * canUseTool order, and host callIds map back to them via the content-block
-     * ids — so handlers park under the exact tool-use id, never a shifted FIFO
-     * slot. Results buffer by tool-use id until their handler fires.
+     * Tool-result pairing state. Owned by the session rather than the turn,
+     * because a handler can fire after its turn has ended — see
+     * {@link ToolResultPairing} for the measurement that proves it.
      */
-    private readonly parked;
-    private readonly pendingResults;
-    /** qodercli tool-use ids in canUseTool (execution) order, claimed by MCP handlers. */
-    private readonly toolUseQueue;
-    /** Host callId (qoder-N) → qodercli tool-use id, from the content-block ids. */
-    private readonly hostCallByToolUse;
+    private readonly pairing;
     private readonly mcp;
     private readonly registered;
     private queue;
@@ -233,6 +319,12 @@ export declare class QoderSession {
     private readonly callNonce;
     private abortPending;
     private disposed;
+    /**
+     * How the active turn ended, so its cleanup can tell a completed turn (whose
+     * unclaimed announcements may still belong to a handler about to fire) from an
+     * aborted or failed one (where the CLI cancelled that dispatch).
+     */
+    private turnEndKind;
     /** Previous request's messages for delta feeding. */
     fedMessages: readonly RequestMessage[] | undefined;
     fedSystem: string | undefined;
@@ -308,9 +400,9 @@ export declare class QoderSession {
     setCwd(cwd: string | undefined): void;
     /**
      * Permission gate for the inner process. Native tools are denied; MCP host
-     * tools are allowed, and each allowed call's qodercli tool-use id is queued
-     * so the matching MCP handler can park under the exact id (qodercli asks
-     * once per call, in execution order, before sending the MCP message).
+     * tools are allowed, and each allowed call's qodercli tool-use id is recorded
+     * so the matching MCP handler can park under the exact id (qodercli asks once
+     * per call, in execution order, before dispatching the MCP message).
      */
     private canUseTool;
     /** Register any host tools whose schema this session's MCP server lacks. */
@@ -349,6 +441,18 @@ export declare class QoderSession {
     private retryWithoutImages;
     /** Tear the inner process down; parked calls die with it. */
     close(): void;
+    /**
+     * Reset the per-turn assembly state.
+     *
+     * Pairing state is deliberately NOT touched here. It looks turn-scoped, but a
+     * `tools/call` handler can fire only after the turn that announced it has
+     * already ended — the host answers a tool call the moment it sees the block,
+     * and the CLI dispatches the MCP message some milliseconds later. Clearing
+     * announcements at this boundary made that handler claim nothing, park under a
+     * fallback key, and wait out the whole tool-result timeout; see
+     * {@link ToolResultPairing}. {@link QoderSession.close} drops it with the
+     * session, and an aborted turn drops what it can no longer claim.
+     */
     private resetTurnState;
     private emit;
     /** Count generated text toward this turn's output tokens. */

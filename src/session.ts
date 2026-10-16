@@ -345,6 +345,174 @@ export async function gateTools(toolName: string, _input: unknown, options: { to
   }
 }
 
+/** Message the inner model reads when a host turn superseded a parked call. */
+const SUPERSEDED_CALL_TEXT = '[宿主取消了这次工具执行]'
+
+/**
+ * The tool-result bridge between the inner CLI and the host.
+ *
+ * qodercli announces a tool call twice, under two different identities:
+ * `canUseTool` receives the CLI's own tool-use id *before* the call runs, while
+ * the MCP `tools/call` handler that actually needs the host's result receives no
+ * id at all. The two arrive in the same order, so a FIFO pairs them — and the
+ * handler then parks under the exact id the host's result was filed under.
+ *
+ * ## Why that FIFO belongs to the session, not to a turn
+ *
+ * Measured against a live CLI, the handler can fire *after* the turn it belongs
+ * to has already ended. The host answers a tool call as soon as it sees the
+ * block, so the adapter's `deliverToolResults` files the result while nothing is
+ * parked yet, and only then does the CLI get around to dispatching the MCP call:
+ *
+ * ```
+ * 6198ms  [endTurn] kind=tool-calls
+ * 6198ms  [host] no parked handler -> BUFFERED under key=call_80d292a7…
+ * 6217ms  [mcp handler] ENTER | shifted toolUseId=undefined
+ * 6217ms  [mcp handler] PARKING under key=anonymous-1
+ * 14226ms [mcp handler] TIMED OUT after 8009ms
+ * ```
+ *
+ * Clearing the announcements at the turn boundary therefore threw away the very
+ * id the handler was about to claim. The handler fell through to a fallback key
+ * nothing could resolve, parked for the whole tool-result timeout, and the turn
+ * stalled — 120 s by default, which the user reads as "the model stopped
+ * answering" and works around by stopping the conversation and resending. The
+ * stall is probabilistic because a *slow* host tool (a shell command) parks its
+ * handler before the turn ends and takes the other path, while a fast one
+ * (`read`, `ask_user_question`) loses the race.
+ *
+ * Announcements are therefore dropped only where the CLI provably cancels its
+ * pending dispatch — {@link forgetUnclaimed} on an aborted or failed turn, and
+ * {@link clear} when the session dies.
+ */
+export class ToolResultPairing {
+  /** Handlers parked under the tool-use id their host result will arrive as. */
+  private readonly parked = new Map<string, ParkedResolver>()
+  /** Results that arrived before their handler did, by tool-use id. */
+  private readonly buffered = new Map<string, ToolResultPayload>()
+  /** Tool-use ids `canUseTool` allowed, in execution order, awaiting a handler. */
+  private readonly announced: string[] = []
+  /**
+   * Host callId (`qoder-N`) → qodercli tool-use id, from the content-block ids.
+   *
+   * Keyed by a per-session nonce, so a stale entry can never be reached by a
+   * later call and is safe to keep across turns; it is dropped with the session.
+   */
+  private readonly hostCallIds = new Map<string, string>()
+  /** Suffix for a handler that claimed no announcement, so keys stay distinct. */
+  private anonymous = 0
+
+  /** Record the tool-use id `canUseTool` allowed, in execution order. */
+  announce(toolUseId: string): void {
+    this.announced.push(toolUseId)
+  }
+
+  /** Record which tool-use id a model-emitted tool-call block belongs to. */
+  mapHostCall(hostCallId: string, toolUseId: string): void {
+    this.hostCallIds.set(hostCallId, toolUseId)
+  }
+
+  /**
+   * Hand one MCP handler the result the host already delivered, or park it until
+   * the host delivers one.
+   *
+   * @param timeoutMs - how long a parked handler waits before failing the call.
+   * @returns the host's result, or a cancellation payload on timeout.
+   */
+  async claim(timeoutMs: number): Promise<ToolResultPayload> {
+    const toolUseId = this.announced.shift()
+    if (toolUseId !== undefined) {
+      const ready = this.buffered.get(toolUseId)
+      if (ready !== undefined) {
+        this.buffered.delete(toolUseId)
+        return ready
+      }
+    }
+    const key = toolUseId ?? `anonymous-${++this.anonymous}`
+    return await new Promise<ToolResultPayload>(resolve => {
+      // Bounded park: an id the host never answers must not leave the inner
+      // process waiting forever, or qodercli's loop deadlocks instead of
+      // recovering. On timeout the call fails so the model can move on.
+      const timer = setTimeout(() => {
+        this.parked.delete(key)
+        resolve({
+          content: [{
+            type: 'text',
+            text: `宿主在 ${timeoutMs / 1000}s 内未返回工具结果（toolUseId=${key}），本次工具调用已取消`,
+          }],
+          isError: true,
+        })
+      }, timeoutMs)
+      this.parked.set(key, payload => {
+        clearTimeout(timer)
+        resolve(payload)
+      })
+    })
+  }
+
+  /**
+   * File one host tool result against the call it answers.
+   *
+   * Resolves the handler already parked under that tool-use id, or buffers the
+   * result for the handler that has not fired yet — which is the ordinary case
+   * for a host tool that returns quickly.
+   *
+   * @param hostCallId - the host-facing call id from the tool-result message.
+   * @param payload - the rendered result.
+   */
+  deliver(hostCallId: string, payload: ToolResultPayload): void {
+    // Without a mapping (a call the host never surfaced) the callId is used as
+    // the key, so the entry still buffers for any handler that parked under it.
+    const key = this.hostCallIds.get(hostCallId) ?? hostCallId
+    const resolve = this.parked.get(key)
+    if (resolve !== undefined) {
+      this.parked.delete(key)
+      resolve(payload)
+      return
+    }
+    this.buffered.set(key, payload)
+  }
+
+  /**
+   * Release every parked handler: the host started a fresh user turn while their
+   * calls were still outstanding, so those calls can never be answered.
+   */
+  cancelParked(): void {
+    const stale = [...this.parked.entries()]
+    this.parked.clear()
+    for (const [, resolve] of stale) {
+      resolve({ content: [{ type: 'text', text: SUPERSEDED_CALL_TEXT }], isError: true })
+    }
+  }
+
+  /**
+   * Drop announcements no handler can still claim.
+   *
+   * An aborted or failed turn is one where the CLI cancels its pending tool
+   * dispatch, so an id it announced but never dispatched would otherwise shift
+   * the pairing of the NEXT turn's handler by one slot and park it under a key
+   * nothing resolves — reintroducing the very stall this class exists to fix.
+   */
+  forgetUnclaimed(): void {
+    this.announced.length = 0
+  }
+
+  /** Drop all pairing state; the session is being torn down. */
+  clear(): void {
+    // Release before discarding, so a handler that is still parked settles
+    // rather than holding a promise nothing can ever resolve.
+    this.cancelParked()
+    this.announced.length = 0
+    this.hostCallIds.clear()
+    this.buffered.clear()
+  }
+
+  /** How many handlers are waiting for a host result. */
+  get parkedCount(): number {
+    return this.parked.size
+  }
+}
+
 /** The SDK permission callback shape this adapter implements per session. */
 type SessionCanUseTool = (toolName: string, input: Record<string, unknown>, options: { toolUseID?: string }) => Promise<unknown>
 
@@ -361,20 +529,11 @@ export class QoderSession {
    */
   private q: Query | null = null
   /**
-   * Tool-call pairing state. qodercli asks `canUseTool` (with the qodercli
-   * tool-use id) once per call in execution order, then sends the MCP message;
-   * the host sees tool calls as content blocks and delivers all results up
-   * front on the next request. Tool-use ids therefore arrive in the handler in
-   * canUseTool order, and host callIds map back to them via the content-block
-   * ids — so handlers park under the exact tool-use id, never a shifted FIFO
-   * slot. Results buffer by tool-use id until their handler fires.
+   * Tool-result pairing state. Owned by the session rather than the turn,
+   * because a handler can fire after its turn has ended — see
+   * {@link ToolResultPairing} for the measurement that proves it.
    */
-  private readonly parked = new Map<string, ParkedResolver>()
-  private readonly pendingResults = new Map<string, ToolResultPayload>()
-  /** qodercli tool-use ids in canUseTool (execution) order, claimed by MCP handlers. */
-  private readonly toolUseQueue: string[] = []
-  /** Host callId (qoder-N) → qodercli tool-use id, from the content-block ids. */
-  private readonly hostCallByToolUse = new Map<string, string>()
+  private readonly pairing = new ToolResultPairing()
   private readonly mcp = createSdkMcpServer({ name: MCP_SERVER_NAME, tools: [] })
   private readonly registered = new Map<string, string>()
   private queue: TurnQueue | null = null
@@ -390,6 +549,12 @@ export class QoderSession {
   private readonly callNonce = randomUUID().slice(0, 8)
   private abortPending = false
   private disposed = false
+  /**
+   * How the active turn ended, so its cleanup can tell a completed turn (whose
+   * unclaimed announcements may still belong to a handler about to fire) from an
+   * aborted or failed one (where the CLI cancelled that dispatch).
+   */
+  private turnEndKind: FinishReason['kind'] | undefined = undefined
   /** Previous request's messages for delta feeding. */
   fedMessages: readonly RequestMessage[] | undefined
   fedSystem: string | undefined
@@ -533,13 +698,13 @@ export class QoderSession {
 
   /**
    * Permission gate for the inner process. Native tools are denied; MCP host
-   * tools are allowed, and each allowed call's qodercli tool-use id is queued
-   * so the matching MCP handler can park under the exact id (qodercli asks
-   * once per call, in execution order, before sending the MCP message).
+   * tools are allowed, and each allowed call's qodercli tool-use id is recorded
+   * so the matching MCP handler can park under the exact id (qodercli asks once
+   * per call, in execution order, before dispatching the MCP message).
    */
   private canUseTool: SessionCanUseTool = (toolName, _input, options) => {
     if (toolName.startsWith(MCP_TOOL_PREFIX)) {
-      if (options.toolUseID !== undefined) this.toolUseQueue.push(options.toolUseID)
+      if (options.toolUseID !== undefined) this.pairing.announce(options.toolUseID)
       return Promise.resolve({ behavior: 'allow', ...options.toolUseID === undefined ? {} : { toolUseID: options.toolUseID } })
     }
     return Promise.resolve({
@@ -561,34 +726,7 @@ export class QoderSession {
           inputSchema: shape,
         }, async (args: unknown): Promise<{ content: McpContent[], isError?: boolean }> => {
           void args
-          const toolUseId = this.toolUseQueue.shift()
-          let result: ToolResultPayload
-          if (toolUseId !== undefined && this.pendingResults.has(toolUseId)) {
-            result = this.pendingResults.get(toolUseId) as ToolResultPayload
-            this.pendingResults.delete(toolUseId)
-          } else {
-            const key = toolUseId ?? `anon-${this.callCounter}-${this.parked.size}`
-            // Bounded park: a tool-use id the host never delivers must not
-            // leave the inner process waiting forever. On timeout the call
-            // fails with an error so qodercli's loop recovers instead of
-            // deadlocking.
-            result = await new Promise<ToolResultPayload>(resolve => {
-              const timer = setTimeout(() => {
-                this.parked.delete(key)
-                resolve({
-                  content: [{
-                    type: 'text',
-                    text: `宿主在 ${this.toolResultTimeoutMs / 1000}s 内未返回工具结果（toolUseId=${key}），本次工具调用已取消`,
-                  }],
-                  isError: true,
-                })
-              }, this.toolResultTimeoutMs)
-              this.parked.set(key, payload => {
-                clearTimeout(timer)
-                resolve(payload)
-              })
-            })
-          }
+          const result = await this.pairing.claim(this.toolResultTimeoutMs)
           return {
             content: result.content,
             ...result.isError ? { isError: true } : {},
@@ -617,32 +755,14 @@ export class QoderSession {
         continue
       }
       if (message.role !== 'tool') continue
-      const callId = String(message.toolCallId)
-      const payload: ToolResultPayload = {
+      this.pairing.deliver(String(message.toolCallId), {
         content: renderResultContent(message.content, images),
         isError: message.isError === true,
-      }
-      // Key by the qodercli tool-use id the host callId maps to; without a
-      // mapping (a call the host never surfaced) fall back to the callId so
-      // the entry still buffers for any handler that parked under it.
-      const key = this.hostCallByToolUse.get(callId) ?? callId
-      const resolve = this.parked.get(key)
-      if (resolve !== undefined) {
-        this.parked.delete(key)
-        resolve(payload)
-      } else {
-        this.pendingResults.set(key, payload)
-      }
+      })
     }
     // The host started a new user turn while calls were still parked: unstick
     // the inner process with an explicit cancellation result.
-    if (freshUserTurn && this.parked.size > 0) {
-      const stale = [...this.parked.entries()]
-      this.parked.clear()
-      for (const [, resolve] of stale) {
-        resolve({ content: [{ type: 'text', text: '[宿主取消了这次工具执行]' }], isError: true })
-      }
-    }
+    if (freshUserTurn && this.pairing.parkedCount > 0) this.pairing.cancelParked()
   }
 
   /**
@@ -701,6 +821,11 @@ export class QoderSession {
     } finally {
       signal?.removeEventListener('abort', onAbort)
       if (abortTimer !== undefined) clearTimeout(abortTimer)
+      // An aborted or failed turn is one where qodercli cancels whatever tool
+      // dispatch it had not yet made. Announcements it never spent would shift
+      // the next turn's handler onto the wrong id, so they are dropped here —
+      // see {@link ToolResultPairing.forgetUnclaimed}.
+      if (this.turnEndKind === 'aborted' || this.turnEndKind === 'error') this.pairing.forgetUnclaimed()
       this.queue = null
       this.abortPending = false
       this.feedFallback = undefined
@@ -743,9 +868,24 @@ export class QoderSession {
   close(): void {
     if (this.disposed) return
     this.disposed = true
+    // Parked handlers die with the process, but their promises must not outlive
+    // it: dropping the pairing state releases anything still waiting.
+    this.pairing.clear()
     if (this.q !== null) void this.q.close().catch(() => undefined)
   }
 
+  /**
+   * Reset the per-turn assembly state.
+   *
+   * Pairing state is deliberately NOT touched here. It looks turn-scoped, but a
+   * `tools/call` handler can fire only after the turn that announced it has
+   * already ended — the host answers a tool call the moment it sees the block,
+   * and the CLI dispatches the MCP message some milliseconds later. Clearing
+   * announcements at this boundary made that handler claim nothing, park under a
+   * fallback key, and wait out the whole tool-result timeout; see
+   * {@link ToolResultPairing}. {@link QoderSession.close} drops it with the
+   * session, and an aborted turn drops what it can no longer claim.
+   */
   private resetTurnState(): void {
     this.blockIndex = 0
     this.textBlock = undefined
@@ -754,12 +894,8 @@ export class QoderSession {
     this.toolCalls = []
     this.turnInputChars = 0
     this.output.reset()
-    // Pairing state is per turn: canUseTool ids are claimed by handlers within
-    // the turn, and host callId mappings were consumed by deliverToolResults
-    // before this stream started.
-    this.toolUseQueue.length = 0
-    this.hostCallByToolUse.clear()
     this.lastUsage = undefined
+    this.turnEndKind = undefined
   }
 
   private emit(chunk: StreamChunk): void { this.queue?.push({ kind: 'chunk', chunk }) }
@@ -854,6 +990,7 @@ export class QoderSession {
 
   private endTurn(reason: FinishReason, usage?: TokenUsage): void {
     if (this.queue === null) return
+    this.turnEndKind = reason.kind
     if (this.textBlock !== undefined) {
       this.emit({ type: 'block-end', index: this.textBlock.index, block: { type: 'text', text: this.textBlock.text } })
     }
@@ -901,7 +1038,7 @@ export class QoderSession {
             if (this.queue === null || this.queue.isClosed) break
             const callId = `qoder-${this.callNonce}-${++this.callCounter}`
             if (typeof block.id === 'string' && block.id.length > 0) {
-              this.hostCallByToolUse.set(callId, block.id)
+              this.pairing.mapHostCall(callId, block.id)
             }
             const chunkIndex = this.blockIndex++
             const initialArguments = block.input !== undefined && block.input !== null && Object.keys(block.input as object).length > 0

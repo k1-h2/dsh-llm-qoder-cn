@@ -199,12 +199,43 @@ v1.0.5 起这个数是 provider 自己数的 `output_tokens`（同一个计量�
 插件**，而适配器在挂载时把配置抄进了自己的字段，于是永远按旧值作答——写入成功、磁盘正确、
 插件读不到。详见下方「开发须知」。
 
+**回答完模型的问题、或工具调用结束后，有时等好几秒才继续，有时干脆不再回复？** v1.0.6 已修。
+根因是**工具结果的配对状态被当成了"每轮"的，而它其实是"每会话"的**。
+
+qodercli 会用两个不同身份通知同一次工具调用：`canUseTool` 先拿到它自己的 `tool_use` id，而真正
+需要宿主结果的那个 MCP `tools/call` handler **拿不到任何 id**。两者顺序一致，靠一个 FIFO 配对。
+实测（真实 CLI，1.1.68）这个 handler 会在**它所属的那一轮已经结束之后**才触发——宿主一看到工具
+调用块就立刻把结果交回来，而 CLI 过几毫秒才派发 MCP 消息：
+
+```
+6198ms  [endTurn] kind=tool-calls
+6198ms  [host] 没有 parked handler -> 缓冲在 key=call_80d292a7…
+6217ms  [mcp handler] ENTER | shift 到 toolUseId=undefined
+6217ms  [mcp handler] PARK 在 key=anonymous-1
+14226ms [mcp handler] TIMED OUT after 8009ms
+```
+
+而 `resetTurnState()` 恰恰在**每轮开始时**清空了那个 id 队列，于是把 handler 正要认领的 id 丢掉了：
+handler 落到兜底键、park 满整个 `toolResultTimeoutSeconds`（默认 **120 秒**），宿主那条结果则永远
+留在缓冲里没人读。**为什么是"有概率"**：宿主工具慢（`pwsh` 跑几秒）时 handler 在轮次结束前就
+park 好了，走的是另一条路；工具快（`read`、`ask_user_question`）时才输掉这个竞态。所以"问模型
+问题"和"工具刚结束"这两类操作最容易中招。而 120 秒远超人的耐心，表现就是"一直不回复"，只能停掉
+对话重发——重发后模型重新发一次调用，这次竞态恰好落在另一边，于是"好了"，但修的是运气不是 bug。
+
+现在配对状态由会话持有，只在**确实会取消派发**的地方丢弃：轮次被 abort / 失败时丢掉这一轮没能
+认领的通知（否则会把下一轮的 handler 挤错一个位置），会话销毁时整体释放。逻辑抽成了
+`ToolResultPairing`，由 7 条单元测试钉住；其中"快结果必须交给轮次结束后才到达的 handler"一条
+是会分辨的那条——在它与 `claim` 之间插一次 `forgetUnclaimed()`（即旧 `resetTurnState()` 在轮次
+边界做的事），它就会 park 满超时并拿到 `toolUseId=anonymous-1` 的取消文本，与线上实测的失败
+形态逐字一致。
+
 ## 实现要点
 
 - **warm 会话**：每个宿主 session id 对应一个常驻内层 `query()` 子进程，对话延续与工具轮次都
   发生在会话内部，超出 `maxSessions` 按插入序 LRU 淘汰。
 - **工具桥接**：宿主工具经进程内 MCP server 暴露给内层模型，qodercli 一次执行一个调用、宿主
-  一次回传整轮结果，以 callId 配对；超过 `toolResultTimeoutSeconds` 取消该次调用。
+  一次回传整轮结果；配对状态（`ToolResultPairing`）由**会话**持有而不是轮次，因为 handler 可能在
+  它那一轮结束之后才触发。超过 `toolResultTimeoutSeconds` 取消该次调用。
 - **旁路请求**：标题生成、压缩摘要走冷启动一次性调用，不占用 warm 会话。
 - **真实计量**：CLI 默认把用量帧里的 token 计数清零，插件在启动子进程时带上它的
   `EXPOSE_TOKEN_USAGE` 开关；总量、缓存命中与 tok/s 因此都是 provider 实测值，只有拿不到计量时才

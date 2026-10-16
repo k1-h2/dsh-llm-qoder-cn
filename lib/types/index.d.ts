@@ -62,7 +62,7 @@ declare module '@deepseek-ai/cordis' {
 }
 export { QoderAdapter, QODER_PROVIDER, cliContextWindow, pickContextWindow } from './adapter.ts';
 export type { ImageRequestReader, QoderAdapterOptions } from './adapter.ts';
-export { QoderSession, QoderSessionManager } from './session.ts';
+export { QoderSession, QoderSessionManager, ToolResultPairing } from './session.ts';
 export type { SessionModelPolicy, SessionRuntimeOptions } from './session.ts';
 export { NARROW_CHARS_PER_TOKEN, WIDE_CHARS_PER_TOKEN, countWideChars, estimateTextTokens, isWideChar } from './tokens.ts';
 export { QODER_MODELS, MODEL_ALIASES, resolveQoderModelId, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from './catalog.ts';

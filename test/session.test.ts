@@ -11,9 +11,16 @@
  * The second half pins which frame may supply the occupancy sample at all: only
  * a finished request may, because the turn-level `result` frame sums every
  * request the inner turn made and once pegged a 1M window at 100%.
+ *
+ * The last block pins the tool-result pairing against a live-CLI measurement:
+ * the MCP handler fires *after* the turn that announced it has already ended, so
+ * the pairing must outlive the turn. Clearing it at the turn boundary — what
+ * this code used to do — made a fast host tool park under a fallback key and
+ * wait out the whole tool-result timeout, which is the "model stopped answering"
+ * stall users worked around by stopping the conversation and resending.
  */
 import { describe, expect, it } from 'vitest'
-import { carriesTokens, meteredUsage, requestUsageSample } from '../src/session.ts'
+import { ToolResultPairing, carriesTokens, meteredUsage, requestUsageSample } from '../src/session.ts'
 
 /** A turn that produced no reasoning text. */
 const noReasoning = (): { reasoningTokens?: number } => ({})
@@ -111,5 +118,115 @@ describe('usage sample selection', () => {
     expect(carriesTokens({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 9_805 })).toBe(true)
     expect(carriesTokens({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })).toBe(false)
     expect(carriesTokens({ context_usage_ratio: 0.49 })).toBe(false)
+  })
+})
+
+/** A host tool result, as the MCP handler reads it. */
+const result = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: false })
+
+describe('tool-result pairing', () => {
+  /**
+   * The measured race, as a unit: the host answers a tool call the instant it
+   * sees the block, and the CLI dispatches the MCP message a few milliseconds
+   * later — so the result is buffered before any handler exists.
+   *
+   * The old implementation cleared the announcements at the turn boundary, which
+   * is exactly what happens between these two steps. That made the handler claim
+   * `undefined`, park under `anonymous-1`, and never read the buffered result:
+   * the call waited out `toolResultTimeoutMs` (120 s by default). Against that
+   * build this test fails with a timeout, which is the point.
+   */
+  it('hands a fast host result to the handler that arrives after the turn ended', async () => {
+    const pairing = new ToolResultPairing()
+    // Turn N: the CLI announces the call, the host's result is filed before the
+    // handler fires. Nothing here is turn-scoped state the turn may clear.
+    pairing.announce('call_80d292a7')
+    pairing.mapHostCall('qoder-probe-1', 'call_80d292a7')
+    pairing.deliver('qoder-probe-1', result('The secret word is BANANA.'))
+
+    // Turn N+1 starts. A turn boundary must not drop the pending pairing.
+    const claimed = await pairing.claim(50)
+    expect(claimed.content).toEqual([{ type: 'text', text: 'The secret word is BANANA.' }])
+    expect(claimed.isError).toBe(false)
+  })
+
+  it('wakes a handler that parked before the host answered', async () => {
+    // The slow-tool path: a shell command takes seconds, so the handler parks
+    // first and `deliver` resolves it. This path always worked; it is pinned so
+    // the fast path above cannot be fixed by breaking this one.
+    const pairing = new ToolResultPairing()
+    pairing.announce('call_slow')
+    pairing.mapHostCall('qoder-slow-1', 'call_slow')
+
+    const parked = pairing.claim(5_000)
+    expect(pairing.parkedCount).toBe(1)
+    pairing.deliver('qoder-slow-1', result('slow result done'))
+
+    await expect(parked).resolves.toMatchObject({ isError: false })
+    expect(pairing.parkedCount).toBe(0)
+  })
+
+  it('keeps two concurrent calls on their own ids', async () => {
+    // `canUseTool` and the handlers agree by order, so a dropped or reordered
+    // announcement would hand one call the other's result.
+    const pairing = new ToolResultPairing()
+    pairing.announce('call_A')
+    pairing.announce('call_B')
+    pairing.mapHostCall('qoder-1', 'call_A')
+    pairing.mapHostCall('qoder-2', 'call_B')
+
+    // B's result is filed first, and must still reach B.
+    pairing.deliver('qoder-2', result('for B'))
+    pairing.deliver('qoder-1', result('for A'))
+
+    const first = await pairing.claim(50)
+    const second = await pairing.claim(50)
+    expect(first.content).toEqual([{ type: 'text', text: 'for A' }])
+    expect(second.content).toEqual([{ type: 'text', text: 'for B' }])
+  })
+
+  it('cancels a parked call when the host starts a fresh user turn', async () => {
+    const pairing = new ToolResultPairing()
+    pairing.announce('call_abandoned')
+    const parked = pairing.claim(5_000)
+    pairing.cancelParked()
+    await expect(parked).resolves.toMatchObject({ isError: true })
+    expect(pairing.parkedCount).toBe(0)
+  })
+
+  it('still fails a call the host never answers, rather than hanging forever', async () => {
+    // The bounded park is what keeps a lost pairing from deadlocking the inner
+    // loop; it must survive as the last-resort recovery.
+    const pairing = new ToolResultPairing()
+    pairing.announce('call_never_answered')
+    const claimed = await pairing.claim(20)
+    expect(claimed.isError).toBe(true)
+    expect(String(claimed.content[0] && 'text' in claimed.content[0] ? claimed.content[0].text : ''))
+      .toContain('未返回工具结果')
+  })
+
+  it('drops announcements an aborted turn can no longer dispatch', async () => {
+    // On abort the CLI cancels its pending dispatch. An announcement it never
+    // spent would otherwise shift the NEXT turn's handler onto the wrong id and
+    // park it under a key nothing resolves — reintroducing the same stall.
+    const pairing = new ToolResultPairing()
+    pairing.announce('call_never_dispatched')
+    pairing.forgetUnclaimed()
+
+    pairing.announce('call_real')
+    pairing.mapHostCall('qoder-9', 'call_real')
+    pairing.deliver('qoder-9', result('real result'))
+
+    const claimed = await pairing.claim(50)
+    expect(claimed.content).toEqual([{ type: 'text', text: 'real result' }])
+  })
+
+  it('releases a parked handler when the session is torn down', async () => {
+    // `close()` must not leave a handler holding a promise nothing can resolve.
+    const pairing = new ToolResultPairing()
+    pairing.announce('call_live')
+    const parked = pairing.claim(60_000)
+    pairing.clear()
+    await expect(parked).resolves.toMatchObject({ isError: true })
   })
 })
